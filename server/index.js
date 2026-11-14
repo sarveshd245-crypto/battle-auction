@@ -1,3 +1,4 @@
+
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
@@ -462,7 +463,6 @@ function makeEpicSeedCharacters(genre) {
 // --------------------------------------------------
 
 async function generateGenreCharacters(genre) {
-
   if (genre === 'Ramayana' || genre === 'Mahabharata') {
     const warriors = makeEpicSeedCharacters(genre);
 
@@ -914,9 +914,18 @@ function resolveAuction(room) {
 // --------------------------------------------------
 
 function completeAuction(room) {
+  if (
+    !room ||
+    room.status === 'team_reveal' ||
+    room.status === 'ready_for_fight' ||
+    room.status === 'championship'
+  ) {
+    return;
+  }
+
   stopTimer(room.code);
 
-  // Find every empty team slot.
+  // Find all empty team slots.
   const emptySlots = [];
 
   for (const player of room.players) {
@@ -925,11 +934,12 @@ function completeAuction(room) {
     }
   }
 
-  // If all teams are already full, proceed directly.
+  // All teams are already full.
   if (emptySlots.length === 0) {
+    room.reserveCharacters = [];
     room.currentCharacter = null;
-    room.turnDeadline = null;
     room.currentTurnPlayerId = null;
+    room.turnDeadline = null;
     room.completionError = null;
     room.status = 'team_reveal';
 
@@ -949,7 +959,7 @@ function completeAuction(room) {
     return;
   }
 
-  // Collect IDs of characters already awarded.
+  // Find characters already assigned to teams.
   const assignedIds = new Set();
 
   for (const player of room.players) {
@@ -958,43 +968,66 @@ function completeAuction(room) {
     }
   }
 
-  // Build the free-character pool from:
-  // 1. Characters that were not awarded.
-  // 2. Characters already placed in the reserve pool.
-  const availableMap = new Map();
+  // Combine all possible unused characters.
+  const combinedPool = [
+    ...(room.characters || []),
+    ...(room.reserveCharacters || [])
+  ];
 
-  for (const character of room.reserveCharacters || []) {
-    if (!assignedIds.has(character.id)) {
-      availableMap.set(character.id, character);
+  const uniqueAvailable = new Map();
+
+  for (const character of combinedPool) {
+    if (!character || !character.id) continue;
+    if (assignedIds.has(character.id)) continue;
+
+    if (!uniqueAvailable.has(character.id)) {
+      uniqueAvailable.set(character.id, character);
     }
   }
 
-  for (const character of room.characters) {
-    if (!assignedIds.has(character.id)) {
-      availableMap.set(character.id, character);
-    }
-  }
+  const freePool = shuffle([...uniqueAvailable.values()]);
 
-  const freePool = shuffle([...availableMap.values()]);
+  console.log(
+    `[FREE ALLOCATION] Room ${room.code}: ` +
+    `${emptySlots.length} empty slots, ` +
+    `${freePool.length} available characters.`
+  );
 
-  // Ensure enough characters are available.
+  // Make sure there are enough characters for every empty slot.
   if (freePool.length < emptySlots.length) {
     room.status = 'incomplete';
+    room.currentCharacter = null;
+    room.currentTurnPlayerId = null;
+    room.turnDeadline = null;
 
     room.completionError =
-      `Not enough unused characters. ${emptySlots.length} slots are empty, but only ${freePool.length} characters are available.`;
+      `Free allocation failed. ${emptySlots.length} slots are empty, ` +
+      `but only ${freePool.length} unused characters are available.`;
 
+    console.error(room.completionError);
     emitRoom(room);
     return;
   }
 
-  // Allocate one free character to every empty slot.
-  emptySlots.forEach((player, index) => {
-    const character = clone(freePool[index]);
+  const allocations = [];
+
+  // Give one unique free character to each empty slot.
+  for (let i = 0; i < emptySlots.length; i++) {
+    const player = emptySlots[i];
+    const character = clone(freePool[i]);
 
     player.team.push({
       ...character,
       paid: 0,
+      allocatedFree: true
+    });
+
+    allocations.push({
+      characterId: character.id,
+      characterName: character.name,
+      winnerId: player.id,
+      winnerName: player.name,
+      amount: 0,
       allocatedFree: true
     });
 
@@ -1008,20 +1041,22 @@ function completeAuction(room) {
     });
 
     room.auctionLog.push({
-      type: 'FREE_CHARACTER_ALLOCATED',
+      type: 'FREE_ALLOCATION',
       characterId: character.id,
       playerId: player.id,
+      playerName: player.name,
+      amount: 0,
       at: Date.now()
     });
-  });
+  }
 
-  // Keep any unused characters in reserve.
+  // Preserve any unused characters in the reserve pool.
   room.reserveCharacters = freePool.slice(emptySlots.length);
 
   // Clear auction state.
   room.currentCharacter = null;
-  room.turnDeadline = null;
   room.currentTurnPlayerId = null;
+  room.turnDeadline = null;
   room.currentBid = room.settings.startingBid;
   room.highestBidderId = null;
   room.lastBidderId = null;
@@ -1029,46 +1064,31 @@ function completeAuction(room) {
   room.passedPlayerIds = new Set();
   room.completionError = null;
 
-  // Show completed teams.
-  room.status = 'team_reveal';
-  emitRoom(room);
-
-  console.log(
-    `Free allocation completed in room ${room.code}: ${emptySlots.length} characters allocated.`
+  // Verify that every player has a complete team.
+  const incompletePlayer = room.players.find(
+    player => player.team.length !== room.settings.teamSize
   );
 
-  // Move to championship-ready state after the reveal.
-  setTimeout(() => {
-    const currentRoom = rooms.get(room.code);
+  if (incompletePlayer) {
+    room.status = 'incomplete';
+    room.completionError =
+      `${incompletePlayer.name}'s team could not be completed.`;
 
-    if (!currentRoom || currentRoom.status !== 'team_reveal') {
-      return;
-    }
-
-    currentRoom.status = 'ready_for_fight';
-    emitRoom(currentRoom);
-  }, 10000);
-}
+    console.error(room.completionError);
+    emitRoom(room);
+    return;
   }
 
-  emptySlots.forEach((player, index) => {
-    player.team.push({
-      ...clone(freePool[index]),
-      paid: 0,
-      allocatedFree: true
-    });
-  });
+  console.log(
+    `[FREE ALLOCATION COMPLETE] Room ${room.code}:`,
+    allocations
+  );
 
-  room.reserveCharacters = freePool.slice(emptySlots.length);
-
-  room.currentCharacter = null;
-  room.turnDeadline = null;
-  room.currentTurnPlayerId = null;
-  room.completionError = null;
-
+  // Reveal teams privately to each player.
   room.status = 'team_reveal';
   emitRoom(room);
 
+  // Enable the Fight button after the reveal period.
   setTimeout(() => {
     const currentRoom = rooms.get(room.code);
 
@@ -1081,6 +1101,10 @@ function completeAuction(room) {
 
     currentRoom.status = 'ready_for_fight';
     emitRoom(currentRoom);
+
+    console.log(
+      `[TEAMS READY] Room ${currentRoom.code}: All teams are complete.`
+    );
   }, 10000);
 }
 
@@ -1223,7 +1247,6 @@ function normalizeCharacterAnalysis(raw, team) {
 
   return raw.map(item => {
     const name = safeText(item.characterName);
-
     const key = name.toLowerCase();
 
     if (!teamCharacters.has(key) || seen.has(key)) {
@@ -1529,7 +1552,6 @@ REQUIRED MATCHUP PAIRS:
 ${JSON.stringify(expectedPairs)}
 `;
 
-  // Retry once if Gemini produces incomplete or invalid data.
   let parsed = null;
   let lastError = null;
 
@@ -1546,7 +1568,6 @@ matchup or character analysis.`
       );
 
       parsed = extractJSON(result.response.text());
-
       break;
 
     } catch (error) {
@@ -1574,10 +1595,6 @@ matchup or character analysis.`
 
   const playerIds = room.players.map(player => player.id);
   const validIds = new Set(playerIds);
-
-  // ------------------------------------------------
-  // VALIDATE TEAM EVALUATIONS
-  // ------------------------------------------------
 
   const evaluationMap = new Map();
 
@@ -1631,10 +1648,6 @@ matchup or character analysis.`
       'Gemini did not evaluate every player exactly once.'
     );
   }
-
-  // ------------------------------------------------
-  // VALIDATE ALL HEAD-TO-HEAD MATCHUPS
-  // ------------------------------------------------
 
   const expectedPairSet = new Set(
     expectedPairs.map(pair =>
@@ -1690,7 +1703,6 @@ matchup or character analysis.`
       Math.min(100, Math.round(scoreB))
     );
 
-    // The scores determine the winner.
     let winnerId = null;
     let result = 'DRAW';
 
@@ -1715,7 +1727,6 @@ matchup or character analysis.`
     const playerA = findPlayer(room, aId);
     const playerB = findPlayer(room, bId);
 
-    // Character analysis is mandatory for both teams.
     const teamAAnalysis = normalizeCharacterAnalysis(
       entry.teamAAnalysis,
       playerA.team
@@ -1753,10 +1764,6 @@ matchup or character analysis.`
       'Gemini did not evaluate every head-to-head matchup.'
     );
   }
-
-  // ------------------------------------------------
-  // CREATE FINAL STANDINGS
-  // ------------------------------------------------
 
   const evaluations = room.players.map(player =>
     evaluationMap.get(player.id)
