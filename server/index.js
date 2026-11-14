@@ -1,4 +1,3 @@
-
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
@@ -23,6 +22,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rooms = new Map();
 const turnTimers = new Map();
 const genreCache = new Map();
+const imageCache = new Map();
 
 const GENRES = [
   'Ramayana',
@@ -206,6 +206,10 @@ function cleanList(value) {
   return [];
 }
 
+function safeText(value, fallback = '') {
+  return String(value || fallback).trim().slice(0, 1000);
+}
+
 function normalizeCharacter(raw, genre) {
   if (!raw || typeof raw !== 'object') return null;
 
@@ -241,23 +245,114 @@ function roomCode() {
   ).join('');
 }
 
-// --------------------------------------------------
-// GEMINI CHARACTER GENERATION
-// --------------------------------------------------
-
-async function generateGenreCharacters(genre) {
+function getGeminiModel() {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error('Gemini API key is missing. Add GEMINI_API_KEY in Render.');
   }
 
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-  const model = genAI.getGenerativeModel({
+  return genAI.getGenerativeModel({
     model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
     generationConfig: {
       responseMimeType: 'application/json'
     }
   });
+}
+
+// --------------------------------------------------
+// CHARACTER IMAGE LOOKUP
+// --------------------------------------------------
+
+async function getWikipediaImage(character) {
+  const cacheKey = `${character.universe}:${character.name}`.toLowerCase();
+
+  if (imageCache.has(cacheKey)) {
+    return imageCache.get(cacheKey);
+  }
+
+  const promise = (async () => {
+    try {
+      const searchText = `${character.name} ${character.universe}`;
+
+      const searchUrl = new URL('https://en.wikipedia.org/w/api.php');
+      searchUrl.searchParams.set('action', 'query');
+      searchUrl.searchParams.set('generator', 'search');
+      searchUrl.searchParams.set('gsrsearch', searchText);
+      searchUrl.searchParams.set('gsrnamespace', '0');
+      searchUrl.searchParams.set('gsrlimit', '5');
+      searchUrl.searchParams.set('prop', 'pageimages');
+      searchUrl.searchParams.set('piprop', 'thumbnail');
+      searchUrl.searchParams.set('pithumbsize', '700');
+      searchUrl.searchParams.set('format', 'json');
+
+      const response = await fetch(searchUrl, {
+        signal: AbortSignal.timeout(7000),
+        headers: {
+          'User-Agent': 'BattleAuctionGame/1.0 (character image lookup)'
+        }
+      });
+
+      if (!response.ok) return null;
+
+      const data = await response.json();
+      const pages = Object.values(data.query?.pages || {});
+
+      if (!pages.length) return null;
+
+      const name = character.name.toLowerCase();
+
+      // Prefer a page whose title contains the character's name.
+      const bestPage =
+        pages.find(page =>
+          String(page.title || '').toLowerCase().includes(name)
+        ) ||
+        pages[0];
+
+      return bestPage.thumbnail?.source || null;
+
+    } catch (error) {
+      console.warn(
+        `Image lookup failed for ${character.name}:`,
+        error.message
+      );
+
+      return null;
+    }
+  })();
+
+  imageCache.set(cacheKey, promise);
+
+  return promise;
+}
+
+async function attachCharacterImages(characters) {
+  let nextIndex = 0;
+
+  const workerCount = Math.min(5, characters.length);
+
+  async function worker() {
+    while (nextIndex < characters.length) {
+      const index = nextIndex++;
+      const character = characters[index];
+
+      character.imageUrl = await getWikipediaImage(character);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: workerCount }, () => worker())
+  );
+
+  return characters;
+}
+
+// --------------------------------------------------
+// GEMINI CHARACTER GENERATION
+// --------------------------------------------------
+
+async function generateGenreCharacters(genre) {
+  const model = getGeminiModel();
 
   const generated = [];
   const seen = new Set();
@@ -369,6 +464,11 @@ async function getGenreCharacters(genre) {
 function publicRoom(room, viewerId) {
   const showAllTeams = room.status === 'championship';
 
+  const connectedPlayers = room.players.filter(p => p.connected);
+  const currentTurnIndex = connectedPlayers.findIndex(
+    p => p.id === room.currentTurnPlayerId
+  );
+
   return {
     code: room.code,
     hostId: room.hostId,
@@ -392,7 +492,13 @@ function publicRoom(room, viewerId) {
     currentBid: room.currentBid,
     highestBidderId: room.highestBidderId,
     lastBidderId: room.lastBidderId,
-    currentTurnIndex: room.currentTurnIndex,
+
+    // New stable turn identifier.
+    currentTurnPlayerId: room.currentTurnPlayerId,
+
+    // Keep the old index field for compatibility.
+    currentTurnIndex: Math.max(0, currentTurnIndex),
+
     turnDeadline: room.turnDeadline,
     noIncreaseTurns: room.noIncreaseTurns,
     openingPlayerId: room.openingPlayerId,
@@ -401,11 +507,17 @@ function publicRoom(room, viewerId) {
     results: room.results,
     championship: room.championship,
     reserveCount: room.reserveCharacters.length,
-    completionError: room.completionError
+    completionError: room.completionError,
+
+    // Clients can use these to reject old updates.
+    stateVersion: room.stateVersion || 0,
+    serverTime: Date.now()
   };
 }
 
 function emitRoom(room) {
+  room.stateVersion = (room.stateVersion || 0) + 1;
+
   for (const player of room.players) {
     io.to(player.id).emit(
       'room:update',
@@ -432,16 +544,8 @@ function findRoomForSocket(socketId) {
   );
 }
 
-function getCurrentPlayer(room) {
-  const players = activePlayers(room);
-
-  if (!players.length) return null;
-
-  room.currentTurnIndex =
-    ((room.currentTurnIndex % players.length) + players.length) %
-    players.length;
-
-  return players[room.currentTurnIndex];
+function findPlayer(room, playerId) {
+  return room.players.find(player => player.id === playerId);
 }
 
 function canBid(player, room) {
@@ -454,8 +558,48 @@ function canBid(player, room) {
 }
 
 // --------------------------------------------------
-// AUCTION TIMER AND TURN MANAGEMENT
+// AUCTION TURN MANAGEMENT
 // --------------------------------------------------
+
+function getNextEligiblePlayer(room, afterPlayerId) {
+  const players = room.players;
+  if (!players.length) return null;
+
+  const startIndex = players.findIndex(
+    player => player.id === afterPlayerId
+  );
+
+  for (let step = 1; step <= players.length; step++) {
+    const index = (Math.max(startIndex, -1) + step) % players.length;
+    const player = players[index];
+
+    if (!player.connected) continue;
+    if (player.id === room.highestBidderId) continue;
+    if (room.passedPlayerIds.has(player.id)) continue;
+    if (!canBid(player, room)) continue;
+
+    return player;
+  }
+
+  return null;
+}
+
+function finishTurnCycle(room) {
+  if (room.status !== 'auction') return;
+
+  const nextPlayer = getNextEligiblePlayer(
+    room,
+    room.currentTurnPlayerId
+  );
+
+  if (!nextPlayer) {
+    resolveAuction(room);
+    return;
+  }
+
+  room.currentTurnPlayerId = nextPlayer.id;
+  beginTurn(room);
+}
 
 function beginTurn(room) {
   stopTimer(room.code);
@@ -466,49 +610,29 @@ function beginTurn(room) {
 
   if (!players.length) {
     room.turnDeadline = null;
+    room.currentTurnPlayerId = null;
     room.status = 'auction_paused';
     emitRoom(room);
     return;
   }
 
-  let attempts = 0;
+  // If every other eligible player has passed, resolve the auction.
+  const nextPlayer = getNextEligiblePlayer(
+    room,
+    room.currentTurnPlayerId
+  );
 
-  while (attempts < players.length) {
-    if (room.noIncreaseTurns >= players.length) {
-      return resolveAuction(room);
-    }
-
-    const player = getCurrentPlayer(room);
-
-    // The turn has returned to the highest bidder.
-    // They win the character.
-    if (
-      room.highestBidderId &&
-      player?.id === room.highestBidderId
-    ) {
-      return resolveAuction(room);
-    }
-
-    if (canBid(player, room)) break;
-
-    room.noIncreaseTurns++;
-    room.currentTurnIndex =
-      (room.currentTurnIndex + 1) % players.length;
-
-    attempts++;
+  if (!nextPlayer) {
+    resolveAuction(room);
+    return;
   }
 
-  if (
-    attempts >= players.length ||
-    room.noIncreaseTurns >= players.length
-  ) {
-    return resolveAuction(room);
-  }
-
+  room.currentTurnPlayerId = nextPlayer.id;
   room.turnDeadline =
     Date.now() + room.settings.turnSeconds * 1000;
 
   room.turnToken = (room.turnToken || 0) + 1;
+
   const token = room.turnToken;
   const deadline = room.turnDeadline;
 
@@ -528,30 +652,18 @@ function beginTurn(room) {
   turnTimers.set(room.code, timer);
 }
 
-function nextTurn(room) {
-  const players = activePlayers(room);
-
-  if (!players.length) {
-    room.status = 'auction_paused';
-    room.turnDeadline = null;
-    emitRoom(room);
-    return;
-  }
-
-  room.currentTurnIndex =
-    (room.currentTurnIndex + 1) % players.length;
-
-  beginTurn(room);
-}
-
 function passTurn(room, reason = 'SKIP') {
   if (room.status !== 'auction') return;
 
   stopTimer(room.code);
 
-  const player = getCurrentPlayer(room);
+  const player = findPlayer(room, room.currentTurnPlayerId);
 
-  room.noIncreaseTurns++;
+  if (player) {
+    room.passedPlayerIds.add(player.id);
+  }
+
+  room.noIncreaseTurns = room.passedPlayerIds.size;
 
   room.auctionLog.push({
     type: reason,
@@ -559,7 +671,8 @@ function passTurn(room, reason = 'SKIP') {
     at: Date.now()
   });
 
-  nextTurn(room);
+  room.turnDeadline = null;
+  finishTurnCycle(room);
 }
 
 // --------------------------------------------------
@@ -574,9 +687,7 @@ function resolveAuction(room) {
   const character = clone(room.currentCharacter);
   const winnerId = room.lastBidderId;
 
-  const winner = room.players.find(
-    player => player.id === winnerId
-  );
+  const winner = findPlayer(room, winnerId);
 
   let awarded = false;
 
@@ -629,14 +740,15 @@ function resolveAuction(room) {
 
   room.currentCharacter = null;
   room.turnDeadline = null;
+  room.currentTurnPlayerId = null;
   room.currentBid = room.settings.startingBid;
   room.highestBidderId = null;
   room.lastBidderId = null;
   room.noIncreaseTurns = 0;
+  room.passedPlayerIds = new Set();
   room.currentTurnIndex = 0;
   room.status = 'auction_ready';
 
-  // The last character has now been awarded or reserved.
   if (room.characterIndex >= room.characters.length - 1) {
     completeAuction(room);
     return;
@@ -668,7 +780,6 @@ function completeAuction(room) {
     }
   }
 
-  // Every selected character not already owned is available.
   const availableCharacters = room.characters.filter(
     character => !assignedIds.has(character.id)
   );
@@ -687,8 +798,6 @@ function completeAuction(room) {
     return;
   }
 
-  // Give free characters to players with empty slots.
-  // Their wallet balance does not matter.
   emptySlots.forEach((player, index) => {
     player.team.push({
       ...clone(freePool[index]),
@@ -701,9 +810,9 @@ function completeAuction(room) {
 
   room.currentCharacter = null;
   room.turnDeadline = null;
+  room.currentTurnPlayerId = null;
   room.completionError = null;
 
-  // Each player sees only their own team.
   room.status = 'team_reveal';
   emitRoom(room);
 
@@ -750,6 +859,91 @@ function calculateTeamStrength(team) {
   return Math.round(ratings / team.length + synergy);
 }
 
+function calculateStandings(room, matches, evaluations = []) {
+  const evaluationMap = new Map(
+    evaluations.map(evaluation => [
+      evaluation.playerId,
+      evaluation
+    ])
+  );
+
+  const standings = room.players.map(player => {
+    const played = matches.filter(match =>
+      match.teamAId === player.id ||
+      match.teamBId === player.id
+    );
+
+    const wins = played.filter(
+      match => match.winnerId === player.id
+    ).length;
+
+    const draws = played.filter(
+      match => match.result === 'DRAW'
+    ).length;
+
+    const losses = played.length - wins - draws;
+    const points = wins * 3 + draws;
+
+    const scoreDifference = played.reduce((total, match) => {
+      return total + (
+        match.teamAId === player.id
+          ? match.scoreA - match.scoreB
+          : match.scoreB - match.scoreA
+      );
+    }, 0);
+
+    const evaluation = evaluationMap.get(player.id);
+
+    return {
+      playerId: player.id,
+      name: player.name,
+      wins,
+      draws,
+      losses,
+      points,
+      scoreDifference,
+      teamStrength: evaluation?.score ?? calculateTeamStrength(player.team),
+      aiSummary: evaluation?.summary || '',
+      strengths: evaluation?.strengths || [],
+      weaknesses: evaluation?.weaknesses || [],
+      synergy: evaluation?.synergy || '',
+      balance: evaluation?.balance || '',
+      vulnerabilities: evaluation?.vulnerabilities || [],
+      keyContributions: evaluation?.keyContributions || [],
+      rankingRationale: evaluation?.rankingRationale || '',
+      team: player.team
+    };
+  });
+
+  standings.sort((a, b) =>
+    b.points - a.points ||
+    b.wins - a.wins ||
+    b.scoreDifference - a.scoreDifference ||
+    b.teamStrength - a.teamStrength
+  );
+
+  let previousKey = null;
+  let rank = 0;
+
+  standings.forEach((standing, index) => {
+    const key = [
+      standing.points,
+      standing.wins,
+      standing.scoreDifference,
+      standing.teamStrength
+    ].join(':');
+
+    if (key !== previousKey) {
+      rank = index + 1;
+    }
+
+    standing.rank = rank;
+    previousKey = key;
+  });
+
+  return standings;
+}
+
 function createFallbackChampionship(room) {
   const matches = [];
 
@@ -781,79 +975,24 @@ function createFallbackChampionship(room) {
         scoreB,
         winnerId,
         result,
-        explanation: 'Fallback comparison based on team ratings.'
+        explanation:
+          `${a.name} received ${scoreA}/100 based on the average character ratings and team composition. ` +
+          `${b.name} received ${scoreB}/100 using the same method.`
       });
     }
   }
 
-  const standings = room.players.map(player => {
-    const played = matches.filter(match =>
-      match.teamAId === player.id ||
-      match.teamBId === player.id
-    );
-
-    const wins = played.filter(
-      match => match.winnerId === player.id
-    ).length;
-
-    const draws = played.filter(
-      match => match.result === 'DRAW'
-    ).length;
-
-    const losses = played.length - wins - draws;
-
-    const points = wins * 3 + draws;
-
-    const scoreDifference = played.reduce((total, match) => {
-      return total + (
-        match.teamAId === player.id
-          ? match.scoreA - match.scoreB
-          : match.scoreB - match.scoreA
-      );
-    }, 0);
-
-    return {
-      playerId: player.id,
-      name: player.name,
-      wins,
-      draws,
-      losses,
-      points,
-      scoreDifference,
-      teamStrength: calculateTeamStrength(player.team),
-      team: player.team
-    };
-  });
-
-  standings.sort((a, b) =>
-    b.points - a.points ||
-    b.wins - a.wins ||
-    b.scoreDifference - a.scoreDifference ||
-    b.teamStrength - a.teamStrength
-  );
-
-  let previousKey = null;
-  let rank = 0;
-
-  standings.forEach((standing, index) => {
-    const key = [
-      standing.points,
-      standing.wins,
-      standing.scoreDifference,
-      standing.teamStrength
-    ].join(':');
-
-    if (key !== previousKey) rank = index + 1;
-
-    standing.rank = rank;
-    previousKey = key;
-  });
+  const standings = calculateStandings(room, matches);
 
   return {
     matches,
     standings,
     totalMatches: matches.length,
     completedAt: Date.now(),
+    overallSummary:
+      'The AI comparison was unavailable, so the game used the same rating-based fallback calculation for every team.',
+    rankingExplanation:
+      'Rankings are calculated from head-to-head match points. Wins award 3 points, draws award 1 point and losses award 0 points. Ties are resolved by wins, score difference and team strength.',
     aiEvaluation: {
       provider: 'Gemini',
       status: 'unavailable',
@@ -869,20 +1008,11 @@ function createFallbackChampionship(room) {
 }
 
 // --------------------------------------------------
-// GEMINI TEAM COMPARISON AND FINAL RANKINGS
+// GEMINI TEAM COMPARISON
 // --------------------------------------------------
 
 async function evaluateChampionshipWithGemini(room) {
-  const genAI = new GoogleGenerativeAI(
-    process.env.GEMINI_API_KEY
-  );
-
-  const model = genAI.getGenerativeModel({
-    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-    generationConfig: {
-      responseMimeType: 'application/json'
-    }
-  });
+  const model = getGeminiModel();
 
   const teams = room.players.map(player => ({
     playerId: player.id,
@@ -890,6 +1020,7 @@ async function evaluateChampionshipWithGemini(room) {
     characters: player.team.map(character => ({
       name: character.name,
       genre: character.universe,
+      version: character.version,
       rating: character.rating,
       abilities: character.abilities,
       strengths: character.strengths,
@@ -902,34 +1033,74 @@ async function evaluateChampionshipWithGemini(room) {
   const prompt = `
 You are the neutral judge of a friendly team-building championship.
 
-Compare every team fairly using:
-- Individual character abilities and ratings.
-- Strengths and weaknesses.
-- Team balance and compatibility.
-- Complementary abilities and overall team composition.
+Evaluate every team fairly. Use only the character information supplied.
+Do not invent abilities, powers, achievements or weaknesses.
+Do not favour a team simply because its characters are famous.
 
-For Football and Cricket, consider sporting ability and team balance.
-For fictional teams, consider the supplied character abilities.
-Do not invent abilities.
-Do not favour a team merely because it has famous characters.
+For each team, evaluate:
+1. Overall score from 1 to 100.
+2. Short overall summary.
+3. Main strengths.
+4. Main weaknesses.
+5. Team synergy: how well the characters complement one another.
+6. Team balance: coverage of different roles and abilities.
+7. Vulnerabilities: important gaps or shared weaknesses.
+8. Key contributions: explain what each character contributes.
+9. Ranking rationale: why this team deserves its evaluation score.
 
-Give each team a score from 1 to 100.
-Explain the reasoning briefly.
+For Football and Cricket, evaluate sporting ability and team balance.
+For fictional teams, evaluate the supplied character abilities and team composition.
+Do not compare unrelated fictional power systems as if they have identical rules.
+Explain assumptions when a comparison is uncertain.
 
-Return JSON only in this structure:
+Then evaluate EVERY possible head-to-head matchup exactly once.
+For each matchup:
+- Give team A a score from 1 to 100.
+- Give team B a score from 1 to 100.
+- Choose winnerId as teamAId, teamBId, or null for a draw.
+- Explain the matchup using the actual supplied team members.
+- Do not simply copy the overall team score into every matchup.
+- Consider how the particular teams match up against each other.
+
+Return JSON only in this exact structure:
 
 {
+  "overallSummary": "Overall championship summary",
+  "rankingExplanation": "Explain how the final ranking is calculated and why",
   "teams": [
     {
       "playerId": "EXACT_PLAYER_ID",
       "score": 90,
-      "summary": "Explanation of the team's strengths and weaknesses"
+      "summary": "Overall team explanation",
+      "strengths": ["Strength 1", "Strength 2"],
+      "weaknesses": ["Weakness 1", "Weakness 2"],
+      "synergy": "Explain how the team works together",
+      "balance": "Explain team balance",
+      "vulnerabilities": ["Vulnerability 1"],
+      "keyContributions": [
+        {
+          "characterName": "Character name",
+          "contribution": "What this character contributes"
+        }
+      ],
+      "rankingRationale": "Why this team received this score"
+    }
+  ],
+  "matchups": [
+    {
+      "teamAId": "EXACT_PLAYER_ID",
+      "teamBId": "EXACT_PLAYER_ID",
+      "scoreA": 85,
+      "scoreB": 80,
+      "winnerId": "EXACT_PLAYER_ID",
+      "explanation": "Specific head-to-head explanation"
     }
   ]
 }
 
-Include every player exactly once.
-Use the exact playerId values provided.
+Every player must appear exactly once in teams.
+Every unordered pair of players must appear exactly once in matchups.
+Use exact player IDs.
 
 TEAMS:
 ${JSON.stringify(teams)}
@@ -938,150 +1109,178 @@ ${JSON.stringify(teams)}
   const result = await model.generateContent(prompt);
   const parsed = extractJSON(result.response.text());
 
-  if (!Array.isArray(parsed.teams)) {
-    throw new Error('Gemini did not return a valid team list.');
+  if (!Array.isArray(parsed.teams) || !Array.isArray(parsed.matchups)) {
+    throw new Error('Gemini returned an incomplete championship evaluation.');
   }
 
-  const scoreMap = new Map();
+  const playerIds = room.players.map(player => player.id);
+  const validIds = new Set(playerIds);
+
+  // Validate that every player is evaluated exactly once.
+  const evaluationMap = new Map();
 
   for (const entry of parsed.teams) {
-    const score = Math.round(Number(entry.score));
+    if (!validIds.has(entry.playerId)) {
+      throw new Error('Gemini returned an unknown player ID.');
+    }
 
-    if (
-      room.players.some(player => player.id === entry.playerId) &&
-      Number.isFinite(score)
-    ) {
-      scoreMap.set(entry.playerId, {
-        score: Math.max(1, Math.min(100, score)),
-        summary: String(
-          entry.summary || 'Team evaluated by Gemini.'
-        ).slice(0, 500)
-      });
+    if (evaluationMap.has(entry.playerId)) {
+      throw new Error('Gemini returned a duplicate team evaluation.');
+    }
+
+    const score = Number(entry.score);
+
+    if (!Number.isFinite(score)) {
+      throw new Error('Gemini returned an invalid team score.');
+    }
+
+    evaluationMap.set(entry.playerId, {
+      playerId: entry.playerId,
+      score: Math.max(1, Math.min(100, Math.round(score))),
+      summary: safeText(entry.summary, 'Team evaluated by Gemini.'),
+      strengths: cleanList(entry.strengths),
+      weaknesses: cleanList(entry.weaknesses),
+      synergy: safeText(entry.synergy, 'No synergy explanation supplied.'),
+      balance: safeText(entry.balance, 'No balance explanation supplied.'),
+      vulnerabilities: cleanList(entry.vulnerabilities),
+      keyContributions: Array.isArray(entry.keyContributions)
+        ? entry.keyContributions.slice(0, 20).map(item => ({
+            characterName: safeText(item.characterName, 'Team member'),
+            contribution: safeText(item.contribution, 'Contribution not specified.')
+          }))
+        : [],
+      rankingRationale: safeText(
+        entry.rankingRationale,
+        'No ranking rationale supplied.'
+      )
+    });
+  }
+
+  if (evaluationMap.size !== room.players.length) {
+    throw new Error('Gemini did not evaluate every player exactly once.');
+  }
+
+  // Validate every possible head-to-head matchup.
+  const expectedPairs = new Set();
+
+  for (let i = 0; i < playerIds.length; i++) {
+    for (let j = i + 1; j < playerIds.length; j++) {
+      expectedPairs.add([playerIds[i], playerIds[j]].sort().join('|'));
     }
   }
 
-  if (scoreMap.size !== room.players.length) {
-    throw new Error('Gemini did not evaluate every team.');
-  }
-
-  const evaluatedPlayers = room.players.map(player => ({
-    ...player,
-    aiScore: scoreMap.get(player.id).score,
-    aiSummary: scoreMap.get(player.id).summary
-  }));
-
-  // Generate every head-to-head comparison.
+  const actualPairs = new Set();
   const matches = [];
 
-  for (let i = 0; i < evaluatedPlayers.length; i++) {
-    for (let j = i + 1; j < evaluatedPlayers.length; j++) {
-      const a = evaluatedPlayers[i];
-      const b = evaluatedPlayers[j];
+  for (const entry of parsed.matchups) {
+    const aId = entry.teamAId;
+    const bId = entry.teamBId;
 
-      let winnerId = null;
-      let result = 'DRAW';
-
-      if (a.aiScore > b.aiScore) {
-        winnerId = a.id;
-        result = 'TEAM_A_WINS';
-      } else if (b.aiScore > a.aiScore) {
-        winnerId = b.id;
-        result = 'TEAM_B_WINS';
-      }
-
-      matches.push({
-        teamAId: a.id,
-        teamAName: a.name,
-        teamBId: b.id,
-        teamBName: b.name,
-        scoreA: a.aiScore,
-        scoreB: b.aiScore,
-        winnerId,
-        result,
-        explanation:
-          `${a.name}: ${a.aiScore}/100. ${a.aiSummary} ` +
-          `${b.name}: ${b.aiScore}/100. ${b.aiSummary}`
-      });
+    if (
+      !validIds.has(aId) ||
+      !validIds.has(bId) ||
+      aId === bId
+    ) {
+      throw new Error('Gemini returned an invalid matchup.');
     }
+
+    const pairKey = [aId, bId].sort().join('|');
+
+    if (!expectedPairs.has(pairKey) || actualPairs.has(pairKey)) {
+      throw new Error('Gemini returned a duplicate or unexpected matchup.');
+    }
+
+    actualPairs.add(pairKey);
+
+    const scoreA = Number(entry.scoreA);
+    const scoreB = Number(entry.scoreB);
+
+    if (!Number.isFinite(scoreA) || !Number.isFinite(scoreB)) {
+      throw new Error('Gemini returned invalid matchup scores.');
+    }
+
+    const cleanScoreA = Math.max(1, Math.min(100, Math.round(scoreA)));
+    const cleanScoreB = Math.max(1, Math.min(100, Math.round(scoreB)));
+
+    let winnerId = null;
+    let result = 'DRAW';
+
+    if (cleanScoreA > cleanScoreB) {
+      winnerId = aId;
+      result = 'TEAM_A_WINS';
+    } else if (cleanScoreB > cleanScoreA) {
+      winnerId = bId;
+      result = 'TEAM_B_WINS';
+    }
+
+    // Do not trust a contradictory winner ID from the AI.
+    const suppliedWinner = entry.winnerId;
+
+    if (
+      suppliedWinner !== null &&
+      suppliedWinner !== undefined &&
+      suppliedWinner !== aId &&
+      suppliedWinner !== bId
+    ) {
+      throw new Error('Gemini returned an invalid matchup winner.');
+    }
+
+    const playerA = findPlayer(room, aId);
+    const playerB = findPlayer(room, bId);
+
+    matches.push({
+      teamAId: aId,
+      teamAName: playerA.name,
+      teamBId: bId,
+      teamBName: playerB.name,
+      scoreA: cleanScoreA,
+      scoreB: cleanScoreB,
+      winnerId,
+      result,
+      explanation: safeText(
+        entry.explanation,
+        `${playerA.name} scored ${cleanScoreA}/100 and ${playerB.name} scored ${cleanScoreB}/100 in this matchup.`
+      )
+    });
   }
 
-  const standings = evaluatedPlayers.map(player => {
-    const played = matches.filter(match =>
-      match.teamAId === player.id ||
-      match.teamBId === player.id
-    );
+  if (actualPairs.size !== expectedPairs.size) {
+    throw new Error('Gemini did not evaluate every head-to-head matchup.');
+  }
 
-    const wins = played.filter(
-      match => match.winnerId === player.id
-    ).length;
-
-    const draws = played.filter(
-      match => match.result === 'DRAW'
-    ).length;
-
-    const losses = played.length - wins - draws;
-    const points = wins * 3 + draws;
-
-    const scoreDifference = played.reduce((total, match) => {
-      return total + (
-        match.teamAId === player.id
-          ? match.scoreA - match.scoreB
-          : match.scoreB - match.scoreA
-      );
-    }, 0);
-
-    return {
-      playerId: player.id,
-      name: player.name,
-      wins,
-      draws,
-      losses,
-      points,
-      scoreDifference,
-      teamStrength: player.aiScore,
-      aiSummary: player.aiSummary,
-      team: player.team
-    };
-  });
-
-  standings.sort((a, b) =>
-    b.points - a.points ||
-    b.wins - a.wins ||
-    b.scoreDifference - a.scoreDifference ||
-    b.teamStrength - a.teamStrength
+  const evaluations = room.players.map(player =>
+    evaluationMap.get(player.id)
   );
 
-  let previousKey = null;
-  let rank = 0;
-
-  standings.forEach((standing, index) => {
-    const key = [
-      standing.points,
-      standing.wins,
-      standing.scoreDifference,
-      standing.teamStrength
-    ].join(':');
-
-    if (key !== previousKey) rank = index + 1;
-
-    standing.rank = rank;
-    previousKey = key;
-  });
+  const standings = calculateStandings(
+    room,
+    matches,
+    evaluations
+  );
 
   return {
     matches,
     standings,
     totalMatches: matches.length,
     completedAt: Date.now(),
+    overallSummary: safeText(
+      parsed.overallSummary,
+      'The championship has been evaluated.'
+    ),
+    rankingExplanation: safeText(
+      parsed.rankingExplanation,
+      'Rankings are calculated from the validated head-to-head results.'
+    ),
     aiEvaluation: {
       provider: 'Gemini',
-      status: 'complete'
+      status: 'complete',
+      message: 'All team evaluations and head-to-head matchups were validated.'
     },
     rankingRules: [
       'Match win: 3 points',
       'Match draw: 1 point',
       'Match loss: 0 points',
-      'Tiebreakers: wins, score difference, then Gemini team score'
+      'Tiebreakers: wins, score difference, then Gemini team evaluation score'
     ]
   };
 }
@@ -1093,17 +1292,17 @@ async function startChampionship(room) {
     player => player.team.length !== room.settings.teamSize
   );
 
-  if (incompletePlayer) {
-    return;
-  }
+  if (incompletePlayer) return;
 
-  // Reveal all teams to everyone and show a loading result.
   room.status = 'championship';
+
   room.championship = {
     matches: [],
     standings: [],
     totalMatches: 0,
     completedAt: null,
+    overallSummary: 'Evaluating all teams...',
+    rankingExplanation: 'The final rankings will be calculated after the matchups.',
     aiEvaluation: {
       provider: 'Gemini',
       status: 'evaluating'
@@ -1114,16 +1313,22 @@ async function startChampionship(room) {
   emitRoom(room);
 
   try {
-    room.championship = await evaluateChampionshipWithGemini(room);
+    const evaluation = await evaluateChampionshipWithGemini(room);
+
+    // Do not overwrite a room that has somehow been removed.
+    if (!rooms.has(room.code)) return;
+
+    room.championship = evaluation;
     emitRoom(room);
 
     console.log(`Gemini rankings completed for ${room.code}`);
+
   } catch (error) {
     console.error('Gemini team comparison failed:', error);
 
     room.championship = createFallbackChampionship(room);
     room.championship.aiEvaluation.message =
-      'Gemini comparison could not be completed. Fallback rankings are displayed.';
+      'Gemini comparison could not be completed or validated. Fallback rankings are displayed.';
 
     emitRoom(room);
   }
@@ -1185,6 +1390,7 @@ app.post('/api/research', async (req, res) => {
       count: characters.length,
       characters
     });
+
   } catch (error) {
     res.status(502).json({
       error: 'Gemini character generation failed.',
@@ -1239,16 +1445,19 @@ io.on('connection', socket => {
       highestBidderId: null,
       lastBidderId: null,
       currentTurnIndex: 0,
+      currentTurnPlayerId: null,
       openingPlayerId: socket.id,
       nextOpeningPlayerId: socket.id,
       turnDeadline: null,
       turnToken: 0,
       noIncreaseTurns: 0,
+      passedPlayerIds: new Set(),
       auctionLog: [],
       results: [],
       reserveCharacters: [],
       championship: null,
-      completionError: null
+      completionError: null,
+      stateVersion: 0
     };
 
     rooms.set(code, room);
@@ -1402,9 +1611,13 @@ io.on('connection', socket => {
         return;
       }
 
-      // Exactly one auction character per team slot.
+      // Select exactly one character for every team slot.
       room.characters = shuffle(uniqueCharacters)
         .slice(0, requiredCharacters);
+
+      // Retrieve images only for selected characters.
+      // The auction does not need to wait for all 100 generated entries.
+      await attachCharacterImages(room.characters);
 
       if (
         room.status !== 'loading_characters' ||
@@ -1430,11 +1643,13 @@ io.on('connection', socket => {
       room.highestBidderId = null;
       room.lastBidderId = null;
       room.currentTurnIndex = 0;
+      room.currentTurnPlayerId = null;
       room.openingPlayerId = room.hostId;
       room.nextOpeningPlayerId = room.hostId;
       room.turnDeadline = null;
       room.turnToken = 0;
       room.noIncreaseTurns = 0;
+      room.passedPlayerIds = new Set();
       room.auctionLog = [];
       room.results = [];
       room.reserveCharacters = [];
@@ -1486,25 +1701,27 @@ io.on('connection', socket => {
     room.highestBidderId = null;
     room.lastBidderId = null;
     room.noIncreaseTurns = 0;
-
-    const players = activePlayers(room);
+    room.passedPlayerIds = new Set();
 
     room.openingPlayerId =
       room.nextOpeningPlayerId || room.hostId;
 
-    let openingIndex = players.findIndex(
-      player => player.id === room.openingPlayerId
-    );
+    const openingPlayer = findPlayer(room, room.openingPlayerId);
 
-    if (openingIndex < 0) {
-      openingIndex = players.findIndex(
-        player => player.id === room.hostId
+    if (
+      !openingPlayer ||
+      !openingPlayer.connected ||
+      !canBid(openingPlayer, room)
+    ) {
+      const eligible = room.players.find(player =>
+        canBid(player, room)
       );
+
+      room.currentTurnPlayerId = eligible?.id || null;
+    } else {
+      room.currentTurnPlayerId = openingPlayer.id;
     }
 
-    if (openingIndex < 0) openingIndex = 0;
-
-    room.currentTurnIndex = openingIndex;
     room.turnDeadline = null;
     room.status = 'auction';
 
@@ -1517,23 +1734,21 @@ io.on('connection', socket => {
 
     if (!room || room.status !== 'auction') return;
 
-    const current = getCurrentPlayer(room);
-
-    if (
-      !current ||
-      current.id !== socket.id ||
-      Date.now() > room.turnDeadline
-    ) {
+    if (room.currentTurnPlayerId !== socket.id) {
       return socket.emit(
         'error:message',
-        'It is not your turn or your turn has expired.'
+        'It is not your turn.'
       );
     }
 
-    const player = room.players.find(
-      p => p.id === socket.id
-    );
+    if (!room.turnDeadline || Date.now() > room.turnDeadline) {
+      return socket.emit(
+        'error:message',
+        'Your turn has expired.'
+      );
+    }
 
+    const player = findPlayer(room, socket.id);
     const increment = Number(amount);
 
     if (!Number.isInteger(increment) || increment < 1) {
@@ -1561,6 +1776,10 @@ io.on('connection', socket => {
     room.currentBid = newBid;
     room.highestBidderId = player.id;
     room.lastBidderId = player.id;
+
+    // The latest bidder is no longer required to bid again.
+    // Everyone else gets one opportunity to respond.
+    room.passedPlayerIds = new Set([player.id]);
     room.noIncreaseTurns = 0;
 
     room.auctionLog.push({
@@ -1571,7 +1790,10 @@ io.on('connection', socket => {
       at: Date.now()
     });
 
-    nextTurn(room);
+    room.turnDeadline = null;
+
+    // Find the next eligible player after the bidder.
+    finishTurnCycle(room);
   });
 
   // SKIP TURN
@@ -1580,16 +1802,17 @@ io.on('connection', socket => {
 
     if (!room || room.status !== 'auction') return;
 
-    const current = getCurrentPlayer(room);
-
-    if (
-      !current ||
-      current.id !== socket.id ||
-      Date.now() > room.turnDeadline
-    ) {
+    if (room.currentTurnPlayerId !== socket.id) {
       return socket.emit(
         'error:message',
-        'It is not your turn or your turn has expired.'
+        'It is not your turn.'
+      );
+    }
+
+    if (!room.turnDeadline || Date.now() > room.turnDeadline) {
+      return socket.emit(
+        'error:message',
+        'Your turn has expired.'
       );
     }
 
@@ -1628,44 +1851,30 @@ io.on('connection', socket => {
   // PLAYER DISCONNECT
   socket.on('disconnect', () => {
     for (const room of rooms.values()) {
-      const player = room.players.find(
-        p => p.id === socket.id
-      );
+      const player = findPlayer(room, socket.id);
 
       if (!player) continue;
-
-      const previousCurrentId =
-        room.status === 'auction'
-          ? getCurrentPlayer(room)?.id
-          : null;
 
       player.connected = false;
 
       if (room.status === 'auction') {
-        const remainingPlayers = activePlayers(room);
-
-        if (previousCurrentId === socket.id) {
+        if (room.currentTurnPlayerId === socket.id) {
           stopTimer(room.code);
 
-          room.noIncreaseTurns++;
+          room.passedPlayerIds.add(socket.id);
+          room.noIncreaseTurns = room.passedPlayerIds.size;
+          room.currentTurnPlayerId = socket.id;
+          room.turnDeadline = null;
 
-          if (remainingPlayers.length) {
-            room.currentTurnIndex =
-              room.currentTurnIndex % remainingPlayers.length;
-
-            beginTurn(room);
-          } else {
-            room.status = 'auction_paused';
-            room.turnDeadline = null;
-            emitRoom(room);
-          }
+          finishTurnCycle(room);
         } else {
-          const newIndex = remainingPlayers.findIndex(
-            activePlayer => activePlayer.id === previousCurrentId
-          );
-
-          if (newIndex >= 0) {
-            room.currentTurnIndex = newIndex;
+          // If the highest bidder disconnects, their bid cannot win.
+          // The remaining players can continue bidding.
+          if (room.highestBidderId === socket.id) {
+            room.highestBidderId = null;
+            room.lastBidderId = null;
+            room.currentBid = room.settings.startingBid;
+            room.passedPlayerIds = new Set();
           }
 
           emitRoom(room);
