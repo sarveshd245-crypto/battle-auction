@@ -916,6 +916,7 @@ function resolveAuction(room) {
 function completeAuction(room) {
   stopTimer(room.code);
 
+  // Find every empty team slot.
   const emptySlots = [];
 
   for (const player of room.players) {
@@ -924,6 +925,31 @@ function completeAuction(room) {
     }
   }
 
+  // If all teams are already full, proceed directly.
+  if (emptySlots.length === 0) {
+    room.currentCharacter = null;
+    room.turnDeadline = null;
+    room.currentTurnPlayerId = null;
+    room.completionError = null;
+    room.status = 'team_reveal';
+
+    emitRoom(room);
+
+    setTimeout(() => {
+      const currentRoom = rooms.get(room.code);
+
+      if (!currentRoom || currentRoom.status !== 'team_reveal') {
+        return;
+      }
+
+      currentRoom.status = 'ready_for_fight';
+      emitRoom(currentRoom);
+    }, 10000);
+
+    return;
+  }
+
+  // Collect IDs of characters already awarded.
   const assignedIds = new Set();
 
   for (const player of room.players) {
@@ -932,22 +958,97 @@ function completeAuction(room) {
     }
   }
 
-  const availableCharacters = room.characters.filter(
-    character => !assignedIds.has(character.id)
-  );
+  // Build the free-character pool from:
+  // 1. Characters that were not awarded.
+  // 2. Characters already placed in the reserve pool.
+  const availableMap = new Map();
 
-  const freePool = shuffle(availableCharacters);
+  for (const character of room.reserveCharacters || []) {
+    if (!assignedIds.has(character.id)) {
+      availableMap.set(character.id, character);
+    }
+  }
 
+  for (const character of room.characters) {
+    if (!assignedIds.has(character.id)) {
+      availableMap.set(character.id, character);
+    }
+  }
+
+  const freePool = shuffle([...availableMap.values()]);
+
+  // Ensure enough characters are available.
   if (freePool.length < emptySlots.length) {
     room.status = 'incomplete';
-    room.currentCharacter = null;
-    room.turnDeadline = null;
 
     room.completionError =
-      `Not enough unused characters. ${emptySlots.length} slots are empty, but only ${freePool.length} characters remain.`;
+      `Not enough unused characters. ${emptySlots.length} slots are empty, but only ${freePool.length} characters are available.`;
 
     emitRoom(room);
     return;
+  }
+
+  // Allocate one free character to every empty slot.
+  emptySlots.forEach((player, index) => {
+    const character = clone(freePool[index]);
+
+    player.team.push({
+      ...character,
+      paid: 0,
+      allocatedFree: true
+    });
+
+    room.results.push({
+      characterId: character.id,
+      characterName: character.name,
+      winnerId: player.id,
+      winnerName: player.name,
+      amount: 0,
+      allocatedFree: true
+    });
+
+    room.auctionLog.push({
+      type: 'FREE_CHARACTER_ALLOCATED',
+      characterId: character.id,
+      playerId: player.id,
+      at: Date.now()
+    });
+  });
+
+  // Keep any unused characters in reserve.
+  room.reserveCharacters = freePool.slice(emptySlots.length);
+
+  // Clear auction state.
+  room.currentCharacter = null;
+  room.turnDeadline = null;
+  room.currentTurnPlayerId = null;
+  room.currentBid = room.settings.startingBid;
+  room.highestBidderId = null;
+  room.lastBidderId = null;
+  room.noIncreaseTurns = 0;
+  room.passedPlayerIds = new Set();
+  room.completionError = null;
+
+  // Show completed teams.
+  room.status = 'team_reveal';
+  emitRoom(room);
+
+  console.log(
+    `Free allocation completed in room ${room.code}: ${emptySlots.length} characters allocated.`
+  );
+
+  // Move to championship-ready state after the reveal.
+  setTimeout(() => {
+    const currentRoom = rooms.get(room.code);
+
+    if (!currentRoom || currentRoom.status !== 'team_reveal') {
+      return;
+    }
+
+    currentRoom.status = 'ready_for_fight';
+    emitRoom(currentRoom);
+  }, 10000);
+}
   }
 
   emptySlots.forEach((player, index) => {
