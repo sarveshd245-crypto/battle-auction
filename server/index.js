@@ -209,8 +209,6 @@ function shuffle(list) {
   return array;
 }
 
-// Fetch character thumbnails from Wikipedia.
-// If a page has no usable thumbnail, the character's fallback artwork is used.
 async function addCharacterImages(characters) {
   return Promise.all(characters.map(async character => {
     const title = IMAGE_TITLES[character.id];
@@ -242,6 +240,7 @@ async function addCharacterImages(characters) {
 
 function roomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
   return Array.from(
     { length: 6 },
     () => chars[Math.floor(Math.random() * chars.length)]
@@ -254,6 +253,7 @@ function publicRoom(room) {
     hostId: room.hostId,
     status: room.status,
     settings: room.settings,
+
     players: room.players.map(player => ({
       id: player.id,
       name: player.name,
@@ -261,6 +261,7 @@ function publicRoom(room) {
       team: player.team,
       connected: player.connected
     })),
+
     characters: room.characters,
     characterIndex: room.characterIndex,
     currentCharacter: room.currentCharacter,
@@ -270,6 +271,8 @@ function publicRoom(room) {
     turnDeadline: room.turnDeadline,
     noIncreaseTurns: room.noIncreaseTurns,
     lastBidderId: room.lastBidderId,
+    openingPlayerId: room.openingPlayerId,
+    nextOpeningPlayerId: room.nextOpeningPlayerId,
     auctionLog: room.auctionLog,
     results: room.results,
     championship: room.championship,
@@ -284,7 +287,9 @@ function emitRoom(room) {
 
 function stopTimer(code) {
   const timer = turnTimers.get(code);
+
   if (timer) clearTimeout(timer);
+
   turnTimers.delete(code);
 }
 
@@ -300,6 +305,7 @@ function findRoomForSocket(socketId) {
 
 function getCurrentPlayer(room) {
   const players = activePlayers(room);
+
   if (!players.length) return null;
 
   room.currentTurnIndex =
@@ -356,6 +362,7 @@ function beginTurn(room) {
   }
 
   room.turnDeadline = Date.now() + room.settings.turnSeconds * 1000;
+
   emitRoom(room);
 
   const delay = Math.max(0, room.turnDeadline - Date.now());
@@ -384,6 +391,7 @@ function nextTurn(room) {
   }
 
   room.currentTurnIndex = (room.currentTurnIndex + 1) % players.length;
+
   beginTurn(room);
 }
 
@@ -395,6 +403,7 @@ function passTurn(room, reason = 'SKIP') {
   const player = getCurrentPlayer(room);
 
   room.noIncreaseTurns++;
+
   room.auctionLog.push({
     type: reason,
     playerId: player?.id || null,
@@ -411,7 +420,10 @@ function resolveAuction(room) {
 
   const character = room.currentCharacter;
   const winnerId = room.lastBidderId;
-  const winner = room.players.find(player => player.id === winnerId);
+
+  const winner = room.players.find(player =>
+    player.id === winnerId
+  );
 
   if (winner && winner.budget >= room.currentBid) {
     winner.budget -= room.currentBid;
@@ -447,6 +459,15 @@ function resolveAuction(room) {
     at: Date.now()
   });
 
+  // The winner of this auction starts the next auction.
+  // If nobody won, retain the previous opening player.
+  if (winner && winner.id) {
+    room.nextOpeningPlayerId = winner.id;
+  } else {
+    room.nextOpeningPlayerId =
+      room.openingPlayerId || room.hostId;
+  }
+
   room.status = 'auction_ready';
   room.turnDeadline = null;
   room.currentTurnIndex = 0;
@@ -467,35 +488,58 @@ function completeAuction(room) {
 
   const emptySlots = [];
 
+  // Find all remaining empty team slots.
   for (const player of room.players) {
     while (player.team.length < room.settings.teamSize) {
       emptySlots.push(player);
     }
   }
 
-  const reserve = shuffle(room.reserveCharacters);
+  // Identify characters that have already been assigned.
+  const assignedCharacterIds = new Set();
 
-  if (reserve.length < emptySlots.length) {
+  for (const player of room.players) {
+    for (const character of player.team) {
+      assignedCharacterIds.add(character.id);
+    }
+  }
+
+  // Find every unused character from the original pool.
+  const availableCharacters = room.characters.filter(
+    character => !assignedCharacterIds.has(character.id)
+  );
+
+  const freePool = shuffle(availableCharacters);
+
+  // Check that enough unused characters remain.
+  if (freePool.length < emptySlots.length) {
     room.status = 'incomplete';
     room.turnDeadline = null;
     room.currentCharacter = null;
+
     room.completionError =
-      'There are not enough unused characters to complete every team.';
+      `Not enough unused characters. ${emptySlots.length} slots are empty, but only ${freePool.length} unused characters remain.`;
+
     emitRoom(room);
     return;
   }
 
+  // Give remaining characters to players for free.
   emptySlots.forEach((player, index) => {
+    const character = freePool[index];
+
     player.team.push({
-      ...clone(reserve[index]),
+      ...clone(character),
       paid: 0,
       allocatedFree: true
     });
   });
 
-  room.reserveCharacters = reserve.slice(emptySlots.length);
+  room.reserveCharacters = freePool.slice(emptySlots.length);
+
   room.currentCharacter = null;
   room.turnDeadline = null;
+  room.completionError = null;
   room.status = 'ready_for_fight';
 
   emitRoom(room);
@@ -571,8 +615,14 @@ function startChampionship(room) {
       match.teamAId === player.id || match.teamBId === player.id
     );
 
-    const wins = played.filter(match => match.winnerId === player.id).length;
-    const draws = played.filter(match => match.result === 'DRAW').length;
+    const wins = played.filter(match =>
+      match.winnerId === player.id
+    ).length;
+
+    const draws = played.filter(match =>
+      match.result === 'DRAW'
+    ).length;
+
     const losses = played.length - wins - draws;
     const points = wins * 3 + draws;
 
@@ -580,6 +630,7 @@ function startChampionship(room) {
       if (match.teamAId === player.id) {
         return total + match.scoreA - match.scoreB;
       }
+
       return total + match.scoreB - match.scoreA;
     }, 0);
 
@@ -634,12 +685,17 @@ function startChampionship(room) {
   };
 
   room.status = 'championship';
+
   emitRoom(room);
 }
 
 function isHost(room, socket) {
   if (!room || room.hostId !== socket.id) {
-    socket.emit('error:message', 'Only the host can perform this action.');
+    socket.emit(
+      'error:message',
+      'Only the host can perform this action.'
+    );
+
     return false;
   }
 
@@ -655,7 +711,9 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.get('/api/universes', (_req, res) => {
-  res.json([...new Set(SEED_CHARACTERS.map(character => character.universe))]);
+  res.json([
+    ...new Set(SEED_CHARACTERS.map(character => character.universe))
+  ]);
 });
 
 app.post('/api/research', async (req, res) => {
@@ -668,11 +726,15 @@ app.post('/api/research', async (req, res) => {
   const universe = String(req.body?.universe || '').trim();
 
   if (!universe) {
-    return res.status(400).json({ error: 'Universe name is required.' });
+    return res.status(400).json({
+      error: 'Universe name is required.'
+    });
   }
 
   try {
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const genAI = new GoogleGenerativeAI(
+      process.env.GEMINI_API_KEY
+    );
 
     const model = genAI.getGenerativeModel({
       model: process.env.GEMINI_MODEL || 'gemini-2.5-flash'
@@ -700,6 +762,7 @@ app.post('/api/research', async (req, res) => {
 });
 
 io.on('connection', socket => {
+
   socket.on('room:create', ({ name, settings = {} } = {}) => {
     let code;
 
@@ -721,6 +784,7 @@ io.on('connection', socket => {
       code,
       hostId: socket.id,
       status: 'lobby',
+
       settings: {
         startingBudget,
         teamSize: 3,
@@ -729,6 +793,7 @@ io.on('connection', socket => {
         universes: ['Marvel', 'DC'],
         ...settings
       },
+
       players: [player],
       characters: [],
       characterIndex: -1,
@@ -737,6 +802,8 @@ io.on('connection', socket => {
       highestBidderId: null,
       lastBidderId: null,
       currentTurnIndex: 0,
+      openingPlayerId: socket.id,
+      nextOpeningPlayerId: socket.id,
       turnDeadline: null,
       noIncreaseTurns: 0,
       auctionLog: [],
@@ -750,6 +817,7 @@ io.on('connection', socket => {
     socket.join(code);
 
     socket.emit('room:created', publicRoom(room));
+
     emitRoom(room);
   });
 
@@ -757,7 +825,10 @@ io.on('connection', socket => {
     const room = rooms.get(String(code || '').toUpperCase());
 
     if (!room || room.status !== 'lobby') {
-      return socket.emit('error:message', 'Room not found or game already started.');
+      return socket.emit(
+        'error:message',
+        'Room not found or game already started.'
+      );
     }
 
     if (room.players.length >= 10) {
@@ -773,9 +844,11 @@ io.on('connection', socket => {
     };
 
     room.players.push(player);
+
     socket.join(room.code);
 
     socket.emit('room:joined', publicRoom(room));
+
     emitRoom(room);
   });
 
@@ -785,12 +858,18 @@ io.on('connection', socket => {
     turnSeconds,
     startingBid
   } = {}) => {
-    const room = [...rooms.values()].find(r => r.hostId === socket.id);
+
+    const room = [...rooms.values()].find(
+      r => r.hostId === socket.id
+    );
 
     if (!room || room.status !== 'lobby') return;
 
     if (room.players.length < 2) {
-      return socket.emit('error:message', 'At least two players are required.');
+      return socket.emit(
+        'error:message',
+        'At least two players are required.'
+      );
     }
 
     const parsedTeamSize = Number(teamSize);
@@ -802,7 +881,10 @@ io.on('connection', socket => {
       parsedTeamSize < 1 ||
       parsedTeamSize > 20
     ) {
-      return socket.emit('error:message', 'Team size must be between 1 and 20.');
+      return socket.emit(
+        'error:message',
+        'Team size must be between 1 and 20.'
+      );
     }
 
     if (
@@ -810,7 +892,10 @@ io.on('connection', socket => {
       parsedTurnSeconds < 5 ||
       parsedTurnSeconds > 120
     ) {
-      return socket.emit('error:message', 'Turn duration must be between 5 and 120 seconds.');
+      return socket.emit(
+        'error:message',
+        'Turn duration must be between 5 and 120 seconds.'
+      );
     }
 
     if (
@@ -818,21 +903,30 @@ io.on('connection', socket => {
       parsedStartingBid < 1 ||
       parsedStartingBid >= room.settings.startingBudget
     ) {
-      return socket.emit('error:message', 'Starting bid must be a positive whole number below the starting budget.');
+      return socket.emit(
+        'error:message',
+        'Starting bid must be a positive whole number below the starting budget.'
+      );
     }
 
     const selectedUniverses =
       Array.isArray(universes) && universes.length
         ? [...new Set(universes.filter(value =>
-            SEED_CHARACTERS.some(character => character.universe === value)
+            SEED_CHARACTERS.some(
+              character => character.universe === value
+            )
           ))]
         : room.settings.universes;
 
     if (!selectedUniverses.length) {
-      return socket.emit('error:message', 'Choose at least one available universe.');
+      return socket.emit(
+        'error:message',
+        'Choose at least one available universe.'
+      );
     }
 
-    const requiredCharacters = room.players.length * parsedTeamSize;
+    const requiredCharacters =
+      room.players.length * parsedTeamSize;
 
     const pool = SEED_CHARACTERS.filter(character =>
       selectedUniverses.includes(character.universe)
@@ -851,13 +945,14 @@ io.on('connection', socket => {
     room.settings.universes = selectedUniverses;
     room.settings.characterCount = requiredCharacters;
 
-    const selectedCharacters = shuffle(pool).slice(0, requiredCharacters);
+    const selectedCharacters =
+      shuffle(pool).slice(0, requiredCharacters);
 
-    // Image lookups are optional; the auction still starts if they fail.
     room.characters = await addCharacterImages(selectedCharacters);
 
-    // The host may have left or the room may have changed during image lookup.
-    if (room.status !== 'lobby' || !rooms.has(room.code)) return;
+    if (room.status !== 'lobby' || !rooms.has(room.code)) {
+      return;
+    }
 
     room.players.forEach(player => {
       player.budget = room.settings.startingBudget;
@@ -870,6 +965,11 @@ io.on('connection', socket => {
     room.highestBidderId = null;
     room.lastBidderId = null;
     room.currentTurnIndex = 0;
+
+    // First auction always starts with the host.
+    room.openingPlayerId = room.hostId;
+    room.nextOpeningPlayerId = room.hostId;
+
     room.turnDeadline = null;
     room.noIncreaseTurns = 0;
     room.auctionLog = [];
@@ -883,12 +983,17 @@ io.on('connection', socket => {
   });
 
   socket.on('auction:next-character', () => {
-    const room = [...rooms.values()].find(r => r.hostId === socket.id);
+    const room = [...rooms.values()].find(
+      r => r.hostId === socket.id
+    );
 
     if (!isHost(room, socket)) return;
 
     if (room.status !== 'auction_ready') {
-      return socket.emit('error:message', 'The next character is not ready yet.');
+      return socket.emit(
+        'error:message',
+        'The next character is not ready yet.'
+      );
     }
 
     if (room.characterIndex + 1 >= room.characters.length) {
@@ -896,12 +1001,38 @@ io.on('connection', socket => {
     }
 
     room.characterIndex++;
-    room.currentCharacter = clone(room.characters[room.characterIndex]);
+
+    room.currentCharacter =
+      clone(room.characters[room.characterIndex]);
+
     room.currentBid = room.settings.startingBid;
     room.highestBidderId = null;
     room.lastBidderId = null;
     room.noIncreaseTurns = 0;
-    room.currentTurnIndex = 0;
+
+    // Start with the previous winner.
+    const active = activePlayers(room);
+
+    room.openingPlayerId =
+      room.nextOpeningPlayerId || room.hostId;
+
+    let openingIndex = active.findIndex(
+      player => player.id === room.openingPlayerId
+    );
+
+    // If the previous winner is unavailable,
+    // try the host, then the first connected player.
+    if (openingIndex < 0) {
+      openingIndex = active.findIndex(
+        player => player.id === room.hostId
+      );
+    }
+
+    if (openingIndex < 0) {
+      openingIndex = 0;
+    }
+
+    room.currentTurnIndex = openingIndex;
     room.turnDeadline = null;
     room.status = 'auction';
 
@@ -920,24 +1051,39 @@ io.on('connection', socket => {
       current.id !== socket.id ||
       Date.now() > room.turnDeadline
     ) {
-      return socket.emit('error:message', 'It is not your turn or your turn has expired.');
+      return socket.emit(
+        'error:message',
+        'It is not your turn or your turn has expired.'
+      );
     }
 
-    const player = room.players.find(p => p.id === socket.id);
+    const player = room.players.find(
+      p => p.id === socket.id
+    );
+
     const increment = Number(amount);
 
     if (!Number.isInteger(increment) || increment < 1) {
-      return socket.emit('error:message', 'Enter a whole-number increase of at least ₹1.');
+      return socket.emit(
+        'error:message',
+        'Enter a whole-number increase of at least ₹1.'
+      );
     }
 
     if (player.team.length >= room.settings.teamSize) {
-      return socket.emit('error:message', 'Your team is full.');
+      return socket.emit(
+        'error:message',
+        'Your team is full.'
+      );
     }
 
     const newBid = room.currentBid + increment;
 
     if (newBid > player.budget) {
-      return socket.emit('error:message', 'That bid exceeds your remaining budget.');
+      return socket.emit(
+        'error:message',
+        'That bid exceeds your remaining budget.'
+      );
     }
 
     stopTimer(room.code);
@@ -970,27 +1116,38 @@ io.on('connection', socket => {
       current.id !== socket.id ||
       Date.now() > room.turnDeadline
     ) {
-      return socket.emit('error:message', 'It is not your turn or your turn has expired.');
+      return socket.emit(
+        'error:message',
+        'It is not your turn or your turn has expired.'
+      );
     }
 
     passTurn(room, 'SKIP');
   });
 
   socket.on('championship:start', () => {
-    const room = [...rooms.values()].find(r => r.hostId === socket.id);
+    const room = [...rooms.values()].find(
+      r => r.hostId === socket.id
+    );
 
     if (!isHost(room, socket)) return;
 
     if (room.status !== 'ready_for_fight') {
-      return socket.emit('error:message', 'The teams are not ready for the championship.');
+      return socket.emit(
+        'error:message',
+        'The teams are not ready for the championship.'
+      );
     }
 
-    const incompletePlayer = room.players.find(player =>
-      player.team.length !== room.settings.teamSize
+    const incompletePlayer = room.players.find(
+      player => player.team.length !== room.settings.teamSize
     );
 
     if (incompletePlayer) {
-      return socket.emit('error:message', `${incompletePlayer.name}'s team is not complete yet.`);
+      return socket.emit(
+        'error:message',
+        `${incompletePlayer.name}'s team is not complete yet.`
+      );
     }
 
     startChampionship(room);
@@ -998,12 +1155,16 @@ io.on('connection', socket => {
 
   socket.on('disconnect', () => {
     for (const room of rooms.values()) {
-      const player = room.players.find(p => p.id === socket.id);
+      const player = room.players.find(
+        p => p.id === socket.id
+      );
+
       if (!player) continue;
 
-      // Remember whose turn it was before removing this player from active players.
       const previousCurrentId =
-        room.status === 'auction' ? getCurrentPlayer(room)?.id : null;
+        room.status === 'auction'
+          ? getCurrentPlayer(room)?.id
+          : null;
 
       player.connected = false;
 
@@ -1012,12 +1173,13 @@ io.on('connection', socket => {
 
         if (previousCurrentId === socket.id) {
           stopTimer(room.code);
+
           room.noIncreaseTurns++;
 
-          // The next player now occupies the disconnected player's old index.
           if (remainingPlayers.length) {
             room.currentTurnIndex =
               room.currentTurnIndex % remainingPlayers.length;
+
             beginTurn(room);
           } else {
             room.status = 'auction_paused';
@@ -1025,12 +1187,14 @@ io.on('connection', socket => {
             emitRoom(room);
           }
         } else {
-          // Preserve the current player's identity if someone else disconnects.
           const newIndex = remainingPlayers.findIndex(
             activePlayer => activePlayer.id === previousCurrentId
           );
 
-          if (newIndex >= 0) room.currentTurnIndex = newIndex;
+          if (newIndex >= 0) {
+            room.currentTurnIndex = newIndex;
+          }
+
           emitRoom(room);
         }
       } else {
@@ -1038,14 +1202,19 @@ io.on('connection', socket => {
       }
     }
   });
+
 });
 
 app.use(express.static(path.join(__dirname, '..', 'dist')));
 
 app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api/')) return next();
+  if (req.path.startsWith('/api/')) {
+    return next();
+  }
 
-  res.sendFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  res.sendFile(
+    path.join(__dirname, '..', 'dist', 'index.html')
+  );
 });
 
 server.listen(PORT, () => {
