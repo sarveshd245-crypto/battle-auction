@@ -7,6 +7,7 @@ const socket = io();
 let room = null;
 let playerName = localStorage.getItem('ba_name') || '';
 let selectedUniverses = ['Marvel', 'DC'];
+let selectedBidIncrement = 1;
 let errorMessage = '';
 let toastTimer;
 let renderTimer;
@@ -493,7 +494,8 @@ function renderAuction() {
               <label>INCREASE BY (₹)</label>
 
               <input id="bidAmount" type="number"
-                min="1" step="1" value="1">
+                min="1" step="1"
+                value="${selectedBidIncrement}">
 
               <div class="quick-bids">
                 <button data-bid="1">+₹1</button>
@@ -549,9 +551,21 @@ function renderAuction() {
     </main>
   `);
 
+  // Preserve the selected increment when the screen refreshes.
+  const bidInput = document.querySelector('#bidAmount');
+
+  if (bidInput) {
+    bidInput.oninput = () => {
+      selectedBidIncrement = bidInput.value;
+    };
+  }
+
   document.querySelectorAll('[data-bid]').forEach(button => {
     button.onclick = () => {
-      document.querySelector('#bidAmount').value = button.dataset.bid;
+      selectedBidIncrement = Number(button.dataset.bid);
+      if (bidInput) {
+        bidInput.value = selectedBidIncrement;
+      }
     };
   });
 
@@ -559,12 +573,15 @@ function renderAuction() {
 
   if (bidButton) {
     bidButton.onclick = () => {
-      const amount = Number(document.querySelector('#bidAmount').value);
+      const amount = Number(bidInput?.value);
 
       if (!Number.isInteger(amount) || amount < 1) {
         return toast('Enter a valid bid increase.');
       }
 
+      selectedBidIncrement = amount;
+
+      // Only this button submits the bid.
       socket.emit('bid:increase', { amount });
     };
   }
