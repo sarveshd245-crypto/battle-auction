@@ -1,4 +1,3 @@
-
 import { io } from 'socket.io-client';
 import './style.css';
 
@@ -10,7 +9,7 @@ let selectedUniverses = ['Marvel', 'DC'];
 let selectedBidIncrement = 1;
 let errorMessage = '';
 let toastTimer;
-let renderTimer;
+let timerInterval;
 
 const root = document.querySelector('#root');
 
@@ -234,7 +233,7 @@ function renderLobby() {
 
               <div>
                 <label>Turn seconds</label>
-                <input id="turnSeconds" type="number" min="5" max="60"
+                <input id="turnSeconds" type="number" min="5" max="120"
                   value="${Number(room.settings?.turnSeconds || 10)}">
               </div>
             </div>
@@ -315,8 +314,8 @@ function renderLobby() {
         return toast('Enter a valid team size.');
       }
 
-      if (!Number.isInteger(turnSeconds) || turnSeconds < 5 || turnSeconds > 60) {
-        return toast('Turn duration must be between 5 and 60 seconds.');
+      if (!Number.isInteger(turnSeconds) || turnSeconds < 5 || turnSeconds > 120) {
+        return toast('Turn duration must be between 5 and 120 seconds.');
       }
 
       if (!Number.isInteger(startingBid) || startingBid < 1 || startingBid >= 100) {
@@ -345,7 +344,6 @@ function characterIcon(universe) {
 
   return icons[universe] || '★';
 }
-
 function renderCharacterDetails(character) {
   if (!character) {
     return '<p class="muted">Character information is not available.</p>';
@@ -428,6 +426,31 @@ function renderCharacterDetails(character) {
   `;
 }
 
+function startAuctionTimer() {
+  clearInterval(timerInterval);
+
+  const updateTimer = () => {
+    if (!room || room.status !== 'auction') {
+      clearInterval(timerInterval);
+      return;
+    }
+
+    const timerElement = document.querySelector('#auctionTimer');
+    if (!timerElement) return;
+
+    const deadline = Number(room.turnDeadline || 0);
+    const remaining = deadline
+      ? Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
+      : 0;
+
+    timerElement.textContent = `${remaining}s`;
+    timerElement.classList.toggle('urgent', remaining <= 3);
+  };
+
+  updateTimer();
+  timerInterval = setInterval(updateTimer, 250);
+}
+
 function renderAuction() {
   const player = me();
   const turn = currentPlayer();
@@ -484,13 +507,18 @@ function renderAuction() {
               <b>${escapeHtml(turn?.name || '—')}</b>
             </div>
 
-            <div class="timer ${remaining <= 3 ? 'urgent' : ''}">
+            <div id="auctionTimer" class="timer ${remaining <= 3 ? 'urgent' : ''}">
               ${remaining}s
             </div>
           </div>
 
           ${myTurn ? `
             <div class="bid-controls">
+              <div class="wallet-box">
+                <small>YOUR REMAINING WALLET</small>
+                <strong>${money(player?.budget)}</strong>
+              </div>
+
               <label>INCREASE BY (₹)</label>
 
               <input id="bidAmount" type="number"
@@ -551,7 +579,6 @@ function renderAuction() {
     </main>
   `);
 
-  // Preserve the selected increment when the screen refreshes.
   const bidInput = document.querySelector('#bidAmount');
 
   if (bidInput) {
@@ -581,7 +608,6 @@ function renderAuction() {
 
       selectedBidIncrement = amount;
 
-      // Only this button submits the bid.
       socket.emit('bid:increase', { amount });
     };
   }
@@ -592,12 +618,8 @@ function renderAuction() {
     skipButton.onclick = () => socket.emit('bid:skip');
   }
 
-  clearTimeout(renderTimer);
-  renderTimer = setTimeout(() => {
-    if (room?.status === 'auction') render();
-  }, 1000);
+  startAuctionTimer();
 }
-
 function renderAuctionReady() {
   const host = isHost();
   const characterNumber = Math.max(0, Number(room.characterIndex || 0) + 1);
@@ -822,7 +844,6 @@ function renderMatch(match, index) {
     </div>
   `;
 }
-
 function renderChampionship() {
   const championship = room.championship || {};
   const standings = list(championship.standings);
@@ -871,8 +892,10 @@ function renderChampionship() {
           <b>Ranking rules</b>
           <p>
             ${escapeHtml(
-              championship.rankingRules ||
-              'Teams are ranked by points, then wins, score difference and team strength.'
+              Array.isArray(championship.rankingRules)
+                ? championship.rankingRules.join(' · ')
+                : championship.rankingRules ||
+                  'Teams are ranked by points, then wins, score difference and team strength.'
             )}
           </p>
         </div>
@@ -911,7 +934,7 @@ function renderChampionship() {
               <div class="team-total">
                 TEAM STRENGTH
                 <b>${Number(
-                  standings.find(item => item.id === player.id)?.teamStrength || 0
+                  standings.find(item => item.playerId === player.id)?.teamStrength || 0
                 )}</b>
               </div>
             </section>
@@ -993,7 +1016,7 @@ function renderPaused() {
 }
 
 function render() {
-  clearTimeout(renderTimer);
+  clearInterval(timerInterval);
 
   if (!room) return renderHome();
 
