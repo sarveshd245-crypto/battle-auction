@@ -1,3 +1,4 @@
+
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
@@ -12,139 +13,175 @@ app.use(cors());
 app.use(express.json());
 
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: '*' }
-});
+const io = new Server(server, { cors: { origin: '*' } });
 
 const PORT = process.env.PORT || 3000;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const rooms = new Map();
 const turnTimers = new Map();
+const revealTimers = new Map();
 const genreCache = new Map();
 const imageCache = new Map();
 
 const GENRES = [
-  'Ramayana',
-  'Mahabharata',
-  'Football',
-  'Cricket',
-  'Marvel',
-  'DC',
-  'Harry Potter',
-  'Anime'
+  'Ramayana', 'Mahabharata', 'Football', 'Cricket',
+  'Marvel', 'DC', 'Harry Potter', 'Anime'
 ];
 
 const SEED_CHARACTERS = [
   {
-    id: 'marvel-spider-man',
-    name: 'Spider-Man',
-    universe: 'Marvel',
-    version: 'Earth-616',
-    rating: 88,
+    id: 'marvel-spider-man', name: 'Spider-Man', universe: 'Marvel',
+    version: 'Earth-616', rating: 88,
     abilities: ['Spider-sense', 'Agility', 'Web-slinging'],
     strengths: ['Mobility', 'Reflexes', 'Improvisation'],
     weaknesses: ['Human-level durability'],
     description: 'Peter Parker is a brilliant hero with extraordinary agility and danger awareness.',
-    combatStyle: 'Fast, mobile and improvisational',
-    sources: []
+    combatStyle: 'Fast, mobile and improvisational', sources: []
   },
   {
-    id: 'marvel-iron-man',
-    name: 'Iron Man',
-    universe: 'Marvel',
-    version: 'Earth-616',
-    rating: 91,
+    id: 'marvel-iron-man', name: 'Iron Man', universe: 'Marvel',
+    version: 'Earth-616', rating: 91,
     abilities: ['Powered armour', 'Repulsors', 'Flight'],
     strengths: ['Technology', 'Range', 'Adaptability'],
     weaknesses: ['Armour dependence'],
     description: 'Tony Stark is an inventor who uses advanced powered armour.',
-    combatStyle: 'Technology-driven ranged combat',
-    sources: []
+    combatStyle: 'Technology-driven ranged combat', sources: []
   },
   {
-    id: 'marvel-thor',
-    name: 'Thor',
-    universe: 'Marvel',
-    version: 'Earth-616',
-    rating: 96,
+    id: 'marvel-thor', name: 'Thor', universe: 'Marvel',
+    version: 'Earth-616', rating: 96,
     abilities: ['Asgardian physiology', 'Mjolnir', 'Lightning'],
     strengths: ['Durability', 'Strength', 'Energy projection'],
     weaknesses: ['Version-dependent limits'],
     description: 'Thor is an Asgardian warrior with immense strength.',
-    combatStyle: 'Powerful close combat and storm-based attacks',
-    sources: []
+    combatStyle: 'Powerful close combat and storm-based attacks', sources: []
   },
   {
-    id: 'dc-batman',
-    name: 'Batman',
-    universe: 'DC',
-    version: 'Main continuity',
-    rating: 87,
+    id: 'dc-batman', name: 'Batman', universe: 'DC',
+    version: 'Main continuity', rating: 87,
     abilities: ['Detective skills', 'Martial arts', 'Technology'],
     strengths: ['Preparation', 'Strategy', 'Stealth'],
     weaknesses: ['Human physiology'],
     description: 'Bruce Wayne is a highly trained detective and strategist.',
-    combatStyle: 'Strategic and technical',
-    sources: []
+    combatStyle: 'Strategic and technical', sources: []
   },
   {
-    id: 'dc-superman',
-    name: 'Superman',
-    universe: 'DC',
-    version: 'Main continuity',
-    rating: 98,
+    id: 'dc-superman', name: 'Superman', universe: 'DC',
+    version: 'Main continuity', rating: 98,
     abilities: ['Flight', 'Super strength', 'Heat vision'],
     strengths: ['Speed', 'Durability', 'Power'],
     weaknesses: ['Continuity-dependent vulnerabilities'],
     description: 'Clark Kent is a Kryptonian with exceptional strength and speed.',
-    combatStyle: 'High-power physical and ranged combat',
-    sources: []
+    combatStyle: 'High-power physical and ranged combat', sources: []
   },
   {
-    id: 'dc-wonder-woman',
-    name: 'Wonder Woman',
-    universe: 'DC',
-    version: 'Main continuity',
-    rating: 94,
+    id: 'dc-wonder-woman', name: 'Wonder Woman', universe: 'DC',
+    version: 'Main continuity', rating: 94,
     abilities: ['Amazonian abilities', 'Combat skill', 'Lasso'],
     strengths: ['Combat', 'Durability', 'Leadership'],
     weaknesses: ['Continuity-dependent limits'],
     description: 'Diana is an Amazonian warrior known for her strength and combat experience.',
-    combatStyle: 'Disciplined close combat',
-    sources: []
-  },
-  {
-    id: 'ramayana-hanuman',
-    name: 'Hanuman',
-    universe: 'Ramayana',
-    version: 'Traditional epic',
-    rating: 99,
-    abilities: ['Immense strength', 'Flight', 'Form-changing'],
-    strengths: ['Strength', 'Resilience', 'Combat skill'],
-    weaknesses: ['Tradition-specific interpretations'],
-    description: 'Hanuman is a powerful Vanara warrior.',
-    combatStyle: 'Mythological strength and mobility',
-    sources: []
-  },
-  {
-    id: 'mahabharata-arjuna',
-    name: 'Arjuna',
-    universe: 'Mahabharata',
-    version: 'Traditional epic',
-    rating: 99,
-    abilities: ['Archery', 'Divine astras', 'Warfare'],
-    strengths: ['Precision', 'Discipline', 'Combat skill'],
-    weaknesses: ['Weapon and context constraints'],
-    description: 'Arjuna is renowned for exceptional archery.',
-    combatStyle: 'Precision archery',
-    sources: []
+    combatStyle: 'Disciplined close combat', sources: []
   }
 ];
 
 // --------------------------------------------------
+// CURATED EPIC CHARACTER DATABASES
+// --------------------------------------------------
+
+const EPIC_CHARACTERS = {
+  Ramayana: [
+    ['Rama',98,'Prince of Ayodhya and skilled warrior and archer'],
+    ['Lakshmana',94,'Brother of Rama and powerful warrior'],
+    ['Bharata',88,'Brother of Rama and warrior prince'],
+    ['Shatrughna',87,'Brother of Rama and warrior prince'],
+    ['Hanuman',99,'Powerful Vanara warrior with extraordinary strength'],
+    ['Ravana',98,'King of Lanka and formidable warrior'],
+    ['Kumbhakarna',95,'Powerful warrior and brother of Ravana'],
+    ['Indrajit',97,'Son of Ravana and master of celestial weapons'],
+    ['Vibhishana',87,'Brother of Ravana who fought alongside Rama'],
+    ['Sugriva',90,'Vanara king and warrior ally of Rama'],
+    ['Vali',96,'Extremely powerful Vanara warrior and king'],
+    ['Angada',91,'Son of Vali and skilled Vanara warrior'],
+    ['Jambavan',92,'Experienced warrior and leader of the bear army'],
+    ['Jatayu',86,'Warrior bird who fought to protect Sita'],
+    ['Garuda',98,'Divine warrior bird with immense power'],
+    ['Maricha',85,'Rakshasa warrior with magical abilities'],
+    ['Subahu',83,'Rakshasa warrior who fought against Rama'],
+    ['Tataka',85,'Powerful Rakshasi warrior'],
+    ['Nala',87,'Vanara warrior and bridge builder'],
+    ['Nila',87,'Vanara warrior and commander'],
+    ['Prahasta',91,'Chief commander of Ravana’s army'],
+    ['Akampana',85,'Rakshasa warrior in Ravana’s army'],
+    ['Atikaya',92,'Powerful son of Ravana and warrior'],
+    ['Narantaka',87,'Son of Ravana and warrior'],
+    ['Devantaka',88,'Son of Ravana and powerful fighter'],
+    ['Trishira',87,'Three-headed warrior in Ravana’s army'],
+    ['Mahodara',85,'Rakshasa commander of Lanka'],
+    ['Mahaparshva',85,'Rakshasa warrior and commander'],
+    ['Dhumraksha',86,'Rakshasa general in Ravana’s army'],
+    ['Vajradamshtra',86,'Powerful Rakshasa warrior'],
+    ['Kumbha',89,'Son of Kumbhakarna and warrior of Lanka'],
+    ['Nikumbha',88,'Son of Kumbhakarna and Rakshasa warrior'],
+    ['Mainda',85,'Vanara warrior in Rama’s army'],
+    ['Dvivida',86,'Vanara warrior and commander'],
+    ['Gavaksha',84,'Vanara commander in Rama’s army'],
+    ['Gaja',84,'Vanara warrior and commander'],
+    ['Rishabha',84,'Vanara warrior who fought in Lanka'],
+    ['Sushena',85,'Vanara commander and warrior'],
+    ['Makaraksha',87,'Son of Khara and Rakshasa warrior'],
+    ['Virupaksha',84,'Rakshasa warrior of Lanka']
+  ],
+  Mahabharata: [
+    ['Krishna',100,'Strategist and guide who played a key role in the war'],
+    ['Arjuna',99,'Legendary archer and one of the greatest warriors'],
+    ['Karna',98,'Legendary archer and formidable warrior'],
+    ['Bhishma',99,'Grand commander and master of warfare'],
+    ['Drona',97,'Master of archery and military strategy'],
+    ['Ashwatthama',96,'Powerful warrior and son of Drona'],
+    ['Bhima',97,'Pandava warrior known for immense strength'],
+    ['Yudhishthira',91,'Pandava warrior and skilled fighter'],
+    ['Nakula',90,'Pandava warrior skilled in swordsmanship'],
+    ['Sahadeva',90,'Pandava warrior and skilled fighter'],
+    ['Duryodhana',96,'Kaurava leader and master of mace fighting'],
+    ['Dushasana',88,'Kaurava warrior and brother of Duryodhana'],
+    ['Abhimanyu',96,'Young warrior renowned for entering the Chakravyuha'],
+    ['Ghatotkacha',96,'Powerful warrior and son of Bhima'],
+    ['Balarama',97,'Master of mace fighting and powerful warrior'],
+    ['Satyaki',93,'Skilled Yadava warrior allied with the Pandavas'],
+    ['Kripacharya',94,'Experienced warrior and master of weapons'],
+    ['Shikhandi',90,'Warrior who played a key role against Bhishma'],
+    ['Dhrishtadyumna',94,'Commander of the Pandava army'],
+    ['Parashurama',100,'Legendary warrior and master of weapons'],
+    ['Ekalavya',94,'Exceptional archer known for his dedication'],
+    ['Jayadratha',89,'King and warrior who fought for the Kauravas'],
+    ['Barbarika',99,'Legendary warrior with extraordinary archery skills'],
+    ['Uttara Kumara',85,'Prince and warrior of the Matsya kingdom'],
+    ['Virata',88,'King of Matsya and warrior'],
+    ['Drupada',90,'King of Panchala and experienced warrior'],
+    ['Pandu',89,'Father of the Pandavas and skilled archer'],
+    ['Somadatta',87,'Kuru-side warrior'],
+    ['Bhagadatta',94,'King and elephant-warrior who fought for the Kauravas'],
+    ['Shalya',93,'King of Madra and powerful warrior'],
+    ['Kritavarma',91,'Yadava warrior who fought for the Kauravas'],
+    ['Bhurishravas',91,'Experienced Kuru-side warrior'],
+    ['Vikarna',86,'Kaurava warrior and brother of Duryodhana'],
+    ['Alambusha',90,'Rakshasa warrior who fought in the Kurukshetra war'],
+    ['Bahlika',88,'Elder Kuru warrior and king'],
+    ['Sudakshina',87,'King of Kamboja and warrior'],
+    ['Brihadbala',88,'King of Kosala who fought in the war'],
+    ['Susharma',88,'King of Trigarta and warrior'],
+    ['Chekitana',89,'Warrior who fought on the Pandava side'],
+    ['Yuyutsu',85,'Kaurava brother who fought for the Pandavas']
+  ]
+};
+
+// --------------------------------------------------
 // GENERAL HELPERS
 // --------------------------------------------------
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -152,20 +189,31 @@ function clone(value) {
 
 function shuffle(list) {
   const array = [...list];
-
   for (let i = array.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [array[i], array[j]] = [array[j], array[i]];
   }
-
   return array;
 }
 
 function slugify(value) {
-  return String(value)
-    .toLowerCase()
+  return String(value).toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '');
+}
+
+function safeText(value, fallback = '') {
+  return String(value || fallback).trim().slice(0, 1000);
+}
+
+function cleanList(value) {
+  if (Array.isArray(value)) {
+    return value.map(x => String(x).trim()).filter(Boolean).slice(0, 12);
+  }
+  if (typeof value === 'string') {
+    return value.split(',').map(x => x.trim()).filter(Boolean).slice(0, 12);
+  }
+  return [];
 }
 
 function extractJSON(value) {
@@ -179,35 +227,11 @@ function extractJSON(value) {
   } catch {
     const start = cleaned.indexOf('{');
     const end = cleaned.lastIndexOf('}');
-
     if (start >= 0 && end > start) {
       return JSON.parse(cleaned.slice(start, end + 1));
     }
-
     throw new Error('Gemini returned invalid JSON.');
   }
-}
-
-function cleanList(value) {
-  if (Array.isArray(value)) {
-    return value
-      .map(item => String(item).trim())
-      .filter(Boolean)
-      .slice(0, 12);
-  }
-
-  if (typeof value === 'string') {
-    return value.split(',')
-      .map(item => item.trim())
-      .filter(Boolean)
-      .slice(0, 12);
-  }
-
-  return [];
-}
-
-function safeText(value, fallback = '') {
-  return String(value || fallback).trim().slice(0, 1000);
 }
 
 function normalizeCharacter(raw, genre) {
@@ -223,9 +247,7 @@ function normalizeCharacter(raw, genre) {
     name,
     universe: genre,
     version: String(raw.version || 'General version').slice(0, 100),
-    rating: Number.isFinite(rating)
-      ? Math.max(1, Math.min(100, rating))
-      : 70,
+    rating: Number.isFinite(rating) ? Math.max(1, Math.min(100, rating)) : 70,
     abilities: cleanList(raw.abilities),
     strengths: cleanList(raw.strengths),
     weaknesses: cleanList(raw.weaknesses),
@@ -238,10 +260,8 @@ function normalizeCharacter(raw, genre) {
 
 function roomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-  return Array.from(
-    { length: 6 },
-    () => chars[Math.floor(Math.random() * chars.length)]
+  return Array.from({ length: 6 }, () =>
+    chars[Math.floor(Math.random() * chars.length)]
   ).join('');
 }
 
@@ -255,9 +275,43 @@ function getGeminiModel() {
   return genAI.getGenerativeModel({
     model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
     generationConfig: {
-      responseMimeType: 'application/json'
+      responseMimeType: 'application/json',
+      temperature: 0.3
     }
   });
+}
+
+// Retries temporary errors. A hard quota exhaustion cannot be fixed by retrying.
+async function generateWithRetry(model, prompt, label = 'Gemini') {
+  let lastError;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await model.generateContent(prompt);
+    } catch (error) {
+      lastError = error;
+      const message = String(error.message || '').toLowerCase();
+
+      const quotaExhausted =
+        message.includes('quota exceeded') ||
+        message.includes('billing') ||
+        message.includes('limit: 0');
+
+      if (quotaExhausted) {
+        throw new Error(
+          `${label}: Gemini API quota is exhausted. Check Google AI Studio usage and billing.`
+        );
+      }
+
+      if (attempt === 3) break;
+
+      const delay = attempt * 2500;
+      console.warn(`${label} attempt ${attempt} failed. Retrying in ${delay}ms.`);
+      await sleep(delay);
+    }
+  }
+
+  throw lastError || new Error(`${label} failed.`);
 }
 
 // --------------------------------------------------
@@ -267,181 +321,71 @@ function getGeminiModel() {
 async function getWikipediaImage(character) {
   const cacheKey = `${character.universe}:${character.name}`.toLowerCase();
 
-  if (imageCache.has(cacheKey)) {
-    return imageCache.get(cacheKey);
-  }
+  if (imageCache.has(cacheKey)) return imageCache.get(cacheKey);
 
   const promise = (async () => {
     try {
-      const searchText = `${character.name} ${character.universe}`;
+      const url = new URL('https://en.wikipedia.org/w/api.php');
+      url.searchParams.set('action', 'query');
+      url.searchParams.set('generator', 'search');
+      url.searchParams.set('gsrsearch', `${character.name} ${character.universe}`);
+      url.searchParams.set('gsrnamespace', '0');
+      url.searchParams.set('gsrlimit', '5');
+      url.searchParams.set('prop', 'pageimages');
+      url.searchParams.set('piprop', 'thumbnail');
+      url.searchParams.set('pithumbsize', '700');
+      url.searchParams.set('format', 'json');
 
-      const searchUrl = new URL('https://en.wikipedia.org/w/api.php');
-      searchUrl.searchParams.set('action', 'query');
-      searchUrl.searchParams.set('generator', 'search');
-      searchUrl.searchParams.set('gsrsearch', searchText);
-      searchUrl.searchParams.set('gsrnamespace', '0');
-      searchUrl.searchParams.set('gsrlimit', '5');
-      searchUrl.searchParams.set('prop', 'pageimages');
-      searchUrl.searchParams.set('piprop', 'thumbnail');
-      searchUrl.searchParams.set('pithumbsize', '700');
-      searchUrl.searchParams.set('format', 'json');
-
-      const response = await fetch(searchUrl, {
-        signal: AbortSignal.timeout(7000),
-        headers: {
-          'User-Agent': 'BattleAuctionGame/1.0 (character image lookup)'
-        }
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(5000),
+        headers: { 'User-Agent': 'BattleAuctionGame/1.0' }
       });
 
       if (!response.ok) return null;
 
       const data = await response.json();
       const pages = Object.values(data.query?.pages || {});
-
       if (!pages.length) return null;
 
       const name = character.name.toLowerCase();
+      const best = pages.find(p =>
+        String(p.title || '').toLowerCase().includes(name)
+      ) || pages[0];
 
-      const bestPage =
-        pages.find(page =>
-          String(page.title || '').toLowerCase().includes(name)
-        ) ||
-        pages[0];
-
-      return bestPage.thumbnail?.source || null;
-
+      return best.thumbnail?.source || null;
     } catch (error) {
-      console.warn(
-        `Image lookup failed for ${character.name}:`,
-        error.message
-      );
-
+      console.warn(`Image lookup failed for ${character.name}:`, error.message);
       return null;
     }
   })();
 
   imageCache.set(cacheKey, promise);
-
   return promise;
 }
 
-async function attachCharacterImages(characters) {
+async function attachCharacterImages(room) {
+  const characters = room.characters;
   let nextIndex = 0;
-
   const workerCount = Math.min(5, characters.length);
 
   async function worker() {
     while (nextIndex < characters.length) {
       const index = nextIndex++;
-      const character = characters[index];
-
-      character.imageUrl = await getWikipediaImage(character);
+      characters[index].imageUrl = await getWikipediaImage(characters[index]);
     }
   }
 
-  await Promise.all(
-    Array.from({ length: workerCount }, () => worker())
-  );
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-  return characters;
+  if (rooms.has(room.code)) emitRoom(room);
 }
 
 // --------------------------------------------------
-// WARRIOR-ONLY EPIC CHARACTER DATABASES
+// CHARACTER GENERATION
 // --------------------------------------------------
 
-const EPIC_CHARACTERS = {
-  Ramayana: [
-    ['Rama', 98, 'Prince of Ayodhya and skilled warrior and archer'],
-    ['Lakshmana', 94, 'Brother of Rama and powerful warrior'],
-    ['Bharata', 88, 'Brother of Rama and warrior prince'],
-    ['Shatrughna', 87, 'Brother of Rama and warrior prince'],
-    ['Hanuman', 99, 'Powerful Vanara warrior with extraordinary strength'],
-    ['Ravana', 98, 'King of Lanka and formidable warrior'],
-    ['Kumbhakarna', 95, 'Powerful warrior and brother of Ravana'],
-    ['Indrajit', 97, 'Son of Ravana and master of celestial weapons'],
-    ['Vibhishana', 87, 'Brother of Ravana who fought alongside Rama'],
-    ['Sugriva', 90, 'Vanara king and warrior ally of Rama'],
-    ['Vali', 96, 'Extremely powerful Vanara warrior and king'],
-    ['Angada', 91, 'Son of Vali and skilled Vanara warrior'],
-    ['Jambavan', 92, 'Experienced warrior and leader of the bear army'],
-    ['Jatayu', 86, 'Warrior bird who fought to protect Sita'],
-    ['Garuda', 98, 'Divine warrior bird with immense power'],
-    ['Maricha', 85, 'Rakshasa warrior with magical abilities'],
-    ['Subahu', 83, 'Rakshasa warrior who fought against Rama'],
-    ['Tataka', 85, 'Powerful Rakshasi warrior'],
-    ['Nala', 87, 'Vanara warrior and bridge builder'],
-    ['Nila', 87, 'Vanara warrior and commander'],
-    ['Prahasta', 91, 'Chief commander of Ravana’s army'],
-    ['Akampana', 85, 'Rakshasa warrior in Ravana’s army'],
-    ['Atikaya', 92, 'Powerful son of Ravana and warrior'],
-    ['Narantaka', 87, 'Son of Ravana and warrior'],
-    ['Devantaka', 88, 'Son of Ravana and powerful fighter'],
-    ['Trishira', 87, 'Three-headed warrior in Ravana’s army'],
-    ['Mahodara', 85, 'Rakshasa commander of Lanka'],
-    ['Mahaparshva', 85, 'Rakshasa warrior and commander'],
-    ['Dhumraksha', 86, 'Rakshasa general in Ravana’s army'],
-    ['Vajradamshtra', 86, 'Powerful Rakshasa warrior'],
-    ['Kumbha', 89, 'Son of Kumbhakarna and warrior of Lanka'],
-    ['Nikumbha', 88, 'Son of Kumbhakarna and Rakshasa warrior'],
-    ['Mainda', 85, 'Vanara warrior in Rama’s army'],
-    ['Dvivida', 86, 'Vanara warrior and commander'],
-    ['Gavaksha', 84, 'Vanara commander in Rama’s army'],
-    ['Gaja', 84, 'Vanara warrior and commander'],
-    ['Rishabha', 84, 'Vanara warrior who fought in Lanka'],
-    ['Sushena', 85, 'Vanara commander and warrior'],
-    ['Makaraksha', 87, 'Son of Khara and Rakshasa warrior'],
-    ['Virupaksha', 84, 'Rakshasa warrior of Lanka']
-  ],
-
-  Mahabharata: [
-    ['Krishna', 100, 'Strategist and guide who played a key role in the war'],
-    ['Arjuna', 99, 'Legendary archer and one of the greatest warriors'],
-    ['Karna', 98, 'Legendary archer and formidable warrior'],
-    ['Bhishma', 99, 'Grand commander and master of warfare'],
-    ['Drona', 97, 'Master of archery and military strategy'],
-    ['Ashwatthama', 96, 'Powerful warrior and son of Drona'],
-    ['Bhima', 97, 'Pandava warrior known for immense strength'],
-    ['Yudhishthira', 91, 'Pandava warrior and skilled fighter'],
-    ['Nakula', 90, 'Pandava warrior skilled in swordsmanship'],
-    ['Sahadeva', 90, 'Pandava warrior and skilled fighter'],
-    ['Duryodhana', 96, 'Kaurava leader and master of mace fighting'],
-    ['Dushasana', 88, 'Kaurava warrior and brother of Duryodhana'],
-    ['Abhimanyu', 96, 'Young warrior renowned for entering the Chakravyuha'],
-    ['Ghatotkacha', 96, 'Powerful warrior and son of Bhima'],
-    ['Balarama', 97, 'Master of mace fighting and powerful warrior'],
-    ['Satyaki', 93, 'Skilled Yadava warrior allied with the Pandavas'],
-    ['Kripacharya', 94, 'Experienced warrior and master of weapons'],
-    ['Shikhandi', 90, 'Warrior who played a key role against Bhishma'],
-    ['Dhrishtadyumna', 94, 'Commander of the Pandava army'],
-    ['Parashurama', 100, 'Legendary warrior and master of weapons'],
-    ['Ekalavya', 94, 'Exceptional archer known for his dedication'],
-    ['Jayadratha', 89, 'King and warrior who fought for the Kauravas'],
-    ['Barbarika', 99, 'Legendary warrior with extraordinary archery skills'],
-    ['Uttara Kumara', 85, 'Prince and warrior of the Matsya kingdom'],
-    ['Virata', 88, 'King of Matsya and warrior'],
-    ['Drupada', 90, 'King of Panchala and experienced warrior'],
-    ['Pandu', 89, 'Father of the Pandavas and skilled archer'],
-    ['Somadatta', 87, 'Kuru-side warrior'],
-    ['Bhagadatta', 94, 'King and elephant-warrior who fought for the Kauravas'],
-    ['Shalya', 93, 'King of Madra and powerful warrior'],
-    ['Kritavarma', 91, 'Yadava warrior who fought for the Kauravas'],
-    ['Bhurishravas', 91, 'Experienced Kuru-side warrior'],
-    ['Vikarna', 86, 'Kaurava warrior and brother of Duryodhana'],
-    ['Alambusha', 90, 'Rakshasa warrior who fought in the Kurukshetra war'],
-    ['Bahlika', 88, 'Elder Kuru warrior and king'],
-    ['Sudakshina', 87, 'King of Kamboja and warrior'],
-    ['Brihadbala', 88, 'King of Kosala who fought in the war'],
-    ['Susharma', 88, 'King of Trigarta and warrior'],
-    ['Chekitana', 89, 'Warrior who fought on the Pandava side'],
-    ['Yuyutsu', 85, 'Kaurava brother who fought for the Pandavas']
-  ]
-};
-
 function makeEpicSeedCharacters(genre) {
-  const entries = EPIC_CHARACTERS[genre] || [];
-
-  return entries.map(([name, rating, description]) => ({
+  return (EPIC_CHARACTERS[genre] || []).map(([name, rating, description]) => ({
     id: `${slugify(genre)}-${slugify(name)}`,
     name,
     universe: genre,
@@ -457,20 +401,9 @@ function makeEpicSeedCharacters(genre) {
   }));
 }
 
-// --------------------------------------------------
-// GEMINI CHARACTER GENERATION
-// --------------------------------------------------
-
 async function generateGenreCharacters(genre) {
-
   if (genre === 'Ramayana' || genre === 'Mahabharata') {
-    const warriors = makeEpicSeedCharacters(genre);
-
-    console.log(
-      `${genre}: ${warriors.length} curated warriors available`
-    );
-
-    return warriors;
+    return makeEpicSeedCharacters(genre);
   }
 
   const generated = [];
@@ -484,39 +417,31 @@ async function generateGenreCharacters(genre) {
       .replace(/[^a-z0-9]/g, '');
 
     if (!key || seen.has(key)) return;
-
     seen.add(key);
     generated.push(character);
   }
 
-  for (const character of SEED_CHARACTERS.filter(
-    item => item.universe === genre
-  )) {
-    addCharacter(clone(character));
+  SEED_CHARACTERS
+    .filter(item => item.universe === genre)
+    .forEach(item => addCharacter(clone(item)));
+
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error(`A Gemini API key is required to generate ${genre} characters.`);
   }
 
-  if (process.env.GEMINI_API_KEY) {
-    try {
-      const model = getGeminiModel();
+  const model = getGeminiModel();
 
-      for (let batch = 0; batch < 6; batch++) {
-        if (generated.length >= 100) break;
+  // Five smaller batches reduce response size and improve reliability.
+  for (let batch = 0; batch < 5 && generated.length < 100; batch++) {
+    const count = Math.min(20, 100 - generated.length);
+    const existingNames = generated.map(c => c.name).join(', ');
 
-        const count = Math.min(20, 100 - generated.length);
+    const prompt = `
+Generate ${count} additional established and distinct characters from "${genre}".
 
-        const existingNames = generated
-          .map(character => character.name)
-          .join(', ');
+Do not repeat these names: ${existingNames}
 
-        const prompt = `
-Generate ${count} additional established and distinct characters
-from "${genre}".
-
-Do not repeat these names:
-${existingNames}
-
-Do not invent characters.
-Use established characters only.
+Use established characters only. Do not invent characters.
 For Football and Cricket, use real established players.
 For Marvel and DC, use established comic-book characters.
 For Harry Potter, use established characters from the books and films.
@@ -529,49 +454,47 @@ Return JSON only:
       "name": "Character name",
       "version": "Series or version",
       "rating": 85,
-      "abilities": ["Ability 1", "Ability 2"],
-      "strengths": ["Strength 1", "Strength 2"],
+      "abilities": ["Ability 1"],
+      "strengths": ["Strength 1"],
       "weaknesses": ["Weakness 1"],
       "description": "Short description",
       "combatStyle": "Style"
     }
   ]
-}
-`;
+}`;
 
-        try {
-          const result = await model.generateContent(prompt);
-          const parsed = extractJSON(result.response.text());
+    try {
+      const result = await generateWithRetry(
+        model,
+        prompt,
+        `${genre} character batch ${batch + 1}`
+      );
 
-          const entries = Array.isArray(parsed.characters)
-            ? parsed.characters
-            : [];
+      const parsed = extractJSON(result.response.text());
+      const entries = Array.isArray(parsed.characters) ? parsed.characters : [];
 
-          for (const raw of entries) {
-            addCharacter(normalizeCharacter(raw, genre));
-
-            if (generated.length >= 100) break;
-          }
-
-        } catch (error) {
-          console.warn(
-            `Gemini batch ${batch + 1} failed for ${genre}:`,
-            error.message
-          );
-        }
+      for (const raw of entries) {
+        addCharacter(normalizeCharacter(raw, genre));
+        if (generated.length >= 100) break;
       }
 
+      if (!entries.length) {
+        console.warn(`${genre}: Gemini returned an empty batch.`);
+        break;
+      }
     } catch (error) {
-      console.warn(
-        `Gemini unavailable for ${genre}:`,
-        error.message
-      );
+      console.warn(`${genre} generation stopped:`, error.message);
+      break;
     }
   }
 
-  console.log(
-    `${genre}: ${generated.length} unique characters available`
-  );
+  console.log(`${genre}: ${generated.length} unique characters available`);
+
+  if (generated.length < 10) {
+    throw new Error(
+      `${genre} produced only ${generated.length} characters. Check Gemini quota or select another genre.`
+    );
+  }
 
   return generated.slice(0, 100);
 }
@@ -581,15 +504,21 @@ async function getGenreCharacters(genre) {
     throw new Error(`Unsupported genre: ${genre}`);
   }
 
-  if (genreCache.has(genre)) {
-    return genreCache.get(genre);
-  }
+  if (genreCache.has(genre)) return genreCache.get(genre);
 
   const promise = generateGenreCharacters(genre);
-  genreCache.set(genre, promise);
 
   try {
-    return await promise;
+    const characters = await promise;
+
+    // Cache curated epic pools and complete generated pools only.
+    const isEpic = genre === 'Ramayana' || genre === 'Mahabharata';
+    if (isEpic || characters.length >= 100) {
+      genreCache.set(genre, Promise.resolve(characters));
+    }
+
+    // Partial pools are deliberately not cached. A later attempt can retry.
+    return characters;
   } catch (error) {
     genreCache.delete(genre);
     throw error;
@@ -597,7 +526,7 @@ async function getGenreCharacters(genre) {
 }
 
 // --------------------------------------------------
-// ROOM DATA AND PRIVATE TEAM VISIBILITY
+// ROOM STATE
 // --------------------------------------------------
 
 function publicRoom(room, viewerId) {
@@ -613,18 +542,13 @@ function publicRoom(room, viewerId) {
     hostId: room.hostId,
     status: room.status,
     settings: room.settings,
-
     players: room.players.map(player => ({
       id: player.id,
       name: player.name,
       budget: player.budget,
-      team:
-        showAllTeams || player.id === viewerId
-          ? player.team
-          : [],
+      team: showAllTeams || player.id === viewerId ? player.team : [],
       connected: player.connected
     })),
-
     characters: room.characters,
     characterIndex: room.characterIndex,
     currentCharacter: room.currentCharacter,
@@ -651,18 +575,13 @@ function emitRoom(room) {
   room.stateVersion = (room.stateVersion || 0) + 1;
 
   for (const player of room.players) {
-    io.to(player.id).emit(
-      'room:update',
-      publicRoom(room, player.id)
-    );
+    io.to(player.id).emit('room:update', publicRoom(room, player.id));
   }
 }
 
 function stopTimer(code) {
   const timer = turnTimers.get(code);
-
   if (timer) clearTimeout(timer);
-
   turnTimers.delete(code);
 }
 
@@ -695,17 +614,12 @@ function canBid(player, room) {
 
 function getNextEligiblePlayer(room, afterPlayerId) {
   const players = room.players;
-
   if (!players.length) return null;
 
-  const startIndex = players.findIndex(
-    player => player.id === afterPlayerId
-  );
+  const startIndex = players.findIndex(p => p.id === afterPlayerId);
 
   for (let step = 1; step <= players.length; step++) {
-    const index =
-      (Math.max(startIndex, -1) + step) % players.length;
-
+    const index = (Math.max(startIndex, -1) + step) % players.length;
     const player = players[index];
 
     if (!player.connected) continue;
@@ -722,10 +636,7 @@ function getNextEligiblePlayer(room, afterPlayerId) {
 function finishTurnCycle(room) {
   if (room.status !== 'auction') return;
 
-  const nextPlayer = getNextEligiblePlayer(
-    room,
-    room.currentTurnPlayerId
-  );
+  const nextPlayer = getNextEligiblePlayer(room, room.currentTurnPlayerId);
 
   if (!nextPlayer) {
     resolveAuction(room);
@@ -738,12 +649,9 @@ function finishTurnCycle(room) {
 
 function beginTurn(room) {
   stopTimer(room.code);
-
   if (room.status !== 'auction') return;
 
-  const players = activePlayers(room);
-
-  if (!players.length) {
+  if (!activePlayers(room).length) {
     room.turnDeadline = null;
     room.currentTurnPlayerId = null;
     room.status = 'auction_paused';
@@ -751,10 +659,7 @@ function beginTurn(room) {
     return;
   }
 
-  let currentPlayer = findPlayer(
-    room,
-    room.currentTurnPlayerId
-  );
+  let currentPlayer = findPlayer(room, room.currentTurnPlayerId);
 
   const eligible =
     currentPlayer &&
@@ -764,10 +669,7 @@ function beginTurn(room) {
     canBid(currentPlayer, room);
 
   if (!eligible) {
-    currentPlayer = getNextEligiblePlayer(
-      room,
-      room.currentTurnPlayerId
-    );
+    currentPlayer = getNextEligiblePlayer(room, room.currentTurnPlayerId);
   }
 
   if (!currentPlayer) {
@@ -776,10 +678,7 @@ function beginTurn(room) {
   }
 
   room.currentTurnPlayerId = currentPlayer.id;
-
-  room.turnDeadline =
-    Date.now() + room.settings.turnSeconds * 1000;
-
+  room.turnDeadline = Date.now() + room.settings.turnSeconds * 1000;
   room.turnToken = (room.turnToken || 0) + 1;
 
   const token = room.turnToken;
@@ -790,8 +689,7 @@ function beginTurn(room) {
   const timer = setTimeout(() => {
     const currentRoom = rooms.get(room.code);
 
-    if (!currentRoom) return;
-    if (currentRoom.status !== 'auction') return;
+    if (!currentRoom || currentRoom.status !== 'auction') return;
     if (currentRoom.turnToken !== token) return;
     if (currentRoom.turnDeadline !== deadline) return;
 
@@ -806,14 +704,8 @@ function passTurn(room, reason = 'SKIP') {
 
   stopTimer(room.code);
 
-  const player = findPlayer(
-    room,
-    room.currentTurnPlayerId
-  );
-
-  if (player) {
-    room.passedPlayerIds.add(player.id);
-  }
+  const player = findPlayer(room, room.currentTurnPlayerId);
+  if (player) room.passedPlayerIds.add(player.id);
 
   room.noIncreaseTurns = room.passedPlayerIds.size;
 
@@ -824,12 +716,11 @@ function passTurn(room, reason = 'SKIP') {
   });
 
   room.turnDeadline = null;
-
   finishTurnCycle(room);
 }
 
 // --------------------------------------------------
-// RESOLVE THE CURRENT AUCTION
+// RESOLVE CURRENT AUCTION
 // --------------------------------------------------
 
 function resolveAuction(room) {
@@ -838,8 +729,7 @@ function resolveAuction(room) {
   stopTimer(room.code);
 
   const character = clone(room.currentCharacter);
-  const winnerId = room.lastBidderId;
-  const winner = findPlayer(room, winnerId);
+  const winner = findPlayer(room, room.lastBidderId);
 
   let awarded = false;
 
@@ -850,11 +740,7 @@ function resolveAuction(room) {
     winner.team.length < room.settings.teamSize
   ) {
     winner.budget -= room.currentBid;
-
-    winner.team.push({
-      ...character,
-      paid: room.currentBid
-    });
+    winner.team.push({ ...character, paid: room.currentBid });
 
     room.results.push({
       characterId: character.id,
@@ -914,6 +800,11 @@ function resolveAuction(room) {
 // --------------------------------------------------
 
 function completeAuction(room) {
+  if (
+    room.status !== 'auction_ready' &&
+    room.status !== 'auction'
+  ) return;
+
   stopTimer(room.code);
 
   const emptySlots = [];
@@ -924,13 +815,9 @@ function completeAuction(room) {
     }
   }
 
-  const assignedIds = new Set();
-
-  for (const player of room.players) {
-    for (const character of player.team) {
-      assignedIds.add(character.id);
-    }
-  }
+  const assignedIds = new Set(
+    room.players.flatMap(player => player.team.map(character => character.id))
+  );
 
   const availableCharacters = room.characters.filter(
     character => !assignedIds.has(character.id)
@@ -942,10 +829,8 @@ function completeAuction(room) {
     room.status = 'incomplete';
     room.currentCharacter = null;
     room.turnDeadline = null;
-
     room.completionError =
       `Not enough unused characters. ${emptySlots.length} slots are empty, but only ${freePool.length} characters remain.`;
-
     emitRoom(room);
     return;
   }
@@ -959,32 +844,32 @@ function completeAuction(room) {
   });
 
   room.reserveCharacters = freePool.slice(emptySlots.length);
-
   room.currentCharacter = null;
   room.turnDeadline = null;
   room.currentTurnPlayerId = null;
   room.completionError = null;
-
   room.status = 'team_reveal';
+
   emitRoom(room);
 
-  setTimeout(() => {
+  const oldTimer = revealTimers.get(room.code);
+  if (oldTimer) clearTimeout(oldTimer);
+
+  const timer = setTimeout(() => {
     const currentRoom = rooms.get(room.code);
 
-    if (
-      !currentRoom ||
-      currentRoom.status !== 'team_reveal'
-    ) {
-      return;
-    }
+    if (!currentRoom || currentRoom.status !== 'team_reveal') return;
 
     currentRoom.status = 'ready_for_fight';
+    revealTimers.delete(room.code);
     emitRoom(currentRoom);
   }, 10000);
+
+  revealTimers.set(room.code, timer);
 }
 
 // --------------------------------------------------
-// TEAM STRENGTH FALLBACK
+// TEAM STRENGTH AND COMBINED STANDINGS
 // --------------------------------------------------
 
 function calculateTeamStrength(team) {
@@ -1008,31 +893,36 @@ function calculateTeamStrength(team) {
     Math.floor((strengths.size + abilities.size) / team.length)
   );
 
-  return Math.round(ratings / team.length + synergy);
+  return Math.max(0, Math.min(100, Math.round(ratings / team.length + synergy)));
 }
+
+/*
+  OPTION C - COMBINED CHAMPIONSHIP
+
+  70% = normalized head-to-head match points
+  30% = overall team evaluation score
+
+  A win = 3 match points
+  A draw = 1 match point
+  A loss = 0 match points
+
+  Maximum possible match points = 3 x (number of opponents).
+*/
 
 function calculateStandings(room, matches, evaluations = []) {
   const evaluationMap = new Map(
-    evaluations.map(evaluation => [
-      evaluation.playerId,
-      evaluation
-    ])
+    evaluations.map(evaluation => [evaluation.playerId, evaluation])
   );
+
+  const maxMatchPoints = Math.max(1, 3 * (room.players.length - 1));
 
   const standings = room.players.map(player => {
     const played = matches.filter(match =>
-      match.teamAId === player.id ||
-      match.teamBId === player.id
+      match.teamAId === player.id || match.teamBId === player.id
     );
 
-    const wins = played.filter(
-      match => match.winnerId === player.id
-    ).length;
-
-    const draws = played.filter(
-      match => match.result === 'DRAW'
-    ).length;
-
+    const wins = played.filter(match => match.winnerId === player.id).length;
+    const draws = played.filter(match => match.result === 'DRAW').length;
     const losses = played.length - wins - draws;
     const points = wins * 3 + draws;
 
@@ -1045,6 +935,16 @@ function calculateStandings(room, matches, evaluations = []) {
     }, 0);
 
     const evaluation = evaluationMap.get(player.id);
+    const teamEvaluationScore = Number(
+      evaluation?.score ?? calculateTeamStrength(player.team)
+    );
+
+    const normalizedMatchScore = (points / maxMatchPoints) * 100;
+
+    const combinedScore = Math.round(
+      normalizedMatchScore * 0.70 +
+      teamEvaluationScore * 0.30
+    );
 
     return {
       playerId: player.id,
@@ -1054,7 +954,9 @@ function calculateStandings(room, matches, evaluations = []) {
       losses,
       points,
       scoreDifference,
-      teamStrength: evaluation?.score ?? calculateTeamStrength(player.team),
+      teamStrength: teamEvaluationScore,
+      normalizedMatchScore: Number(normalizedMatchScore.toFixed(2)),
+      combinedScore,
       aiSummary: evaluation?.summary || '',
       strengths: evaluation?.strengths || [],
       weaknesses: evaluation?.weaknesses || [],
@@ -1068,6 +970,7 @@ function calculateStandings(room, matches, evaluations = []) {
   });
 
   standings.sort((a, b) =>
+    b.combinedScore - a.combinedScore ||
     b.points - a.points ||
     b.wins - a.wins ||
     b.scoreDifference - a.scoreDifference ||
@@ -1079,15 +982,14 @@ function calculateStandings(room, matches, evaluations = []) {
 
   standings.forEach((standing, index) => {
     const key = [
+      standing.combinedScore,
       standing.points,
       standing.wins,
       standing.scoreDifference,
       standing.teamStrength
     ].join(':');
 
-    if (key !== previousKey) {
-      rank = index + 1;
-    }
+    if (key !== previousKey) rank = index + 1;
 
     standing.rank = rank;
     previousKey = key;
@@ -1097,68 +999,43 @@ function calculateStandings(room, matches, evaluations = []) {
 }
 
 // --------------------------------------------------
-// MATCHUP NORMALIZATION
+// LOCAL CHARACTER ANALYSIS FOR EACH MATCHUP
 // --------------------------------------------------
 
-function normalizeCharacterAnalysis(raw, team) {
-  if (!Array.isArray(raw)) {
-    throw new Error('Gemini omitted character matchup analysis.');
-  }
+function buildCharacterAnalysis(team, opponentTeam) {
+  return team.map(character => {
+    const advantages = [
+      ...(character.strengths || []),
+      ...(character.abilities || [])
+    ].slice(0, 5);
 
-  const teamCharacters = new Map(
-    team.map(character => [
-      character.name.toLowerCase(),
-      character
-    ])
-  );
+    const disadvantages = (character.weaknesses || []).slice(0, 5);
 
-  if (raw.length !== team.length) {
-    throw new Error(
-      'Gemini did not provide analysis for every character in a team.'
-    );
-  }
-
-  const seen = new Set();
-
-  return raw.map(item => {
-    const name = safeText(item.characterName);
-
-    const key = name.toLowerCase();
-
-    if (!teamCharacters.has(key) || seen.has(key)) {
-      throw new Error(
-        `Gemini returned an unknown or duplicate character: ${name}`
-      );
-    }
-
-    seen.add(key);
-
-    const advantages = cleanList(item.advantages);
-    const disadvantages = cleanList(item.disadvantages);
-
-    if (!advantages.length || !disadvantages.length) {
-      throw new Error(
-        `Character analysis is incomplete for ${name}.`
-      );
-    }
+    const opponentMatchups = opponentTeam.slice(0, 5).map(opponent => ({
+      opponentName: opponent.name,
+      advantage: advantages[0]
+        ? `${character.name} may benefit from ${advantages[0]}.`
+        : 'No specific advantage was supplied in the character data.',
+      disadvantage: disadvantages[0]
+        ? `${character.name} has the listed limitation: ${disadvantages[0]}.`
+        : 'No specific weakness was supplied in the character data.',
+      impact: `This is a character-data-based comparison with ${opponent.name}, not a guaranteed outcome.`
+    }));
 
     return {
-      characterName: name,
-      opponentMatchups: Array.isArray(item.opponentMatchups)
-        ? item.opponentMatchups.slice(0, 20).map(opponent => ({
-            opponentName: safeText(opponent.opponentName, 'Opponent'),
-            advantage: safeText(opponent.advantage, 'No specific advantage supplied.'),
-            disadvantage: safeText(opponent.disadvantage, 'No specific disadvantage supplied.'),
-            impact: safeText(opponent.impact, 'Impact not specified.')
-          }))
-        : [],
-      advantages,
-      disadvantages,
-      impact: safeText(item.impact, 'Contribution not specified.'),
-      tacticalRole: safeText(item.tacticalRole, 'Role not specified.')
+      characterName: character.name,
+      opponentMatchups,
+      advantages: advantages.length ? advantages : ['No specific advantage supplied.'],
+      disadvantages: disadvantages.length ? disadvantages : ['No specific weakness supplied.'],
+      impact: character.description || 'Contribution based on the supplied character profile.',
+      tacticalRole: character.combatStyle || 'Role not specified.'
     };
   });
 }
+
+// --------------------------------------------------
+// FALLBACK CHAMPIONSHIP
+// --------------------------------------------------
 
 function createFallbackChampionship(room, errorMessage) {
   const matches = [];
@@ -1192,15 +1069,28 @@ function createFallbackChampionship(room, errorMessage) {
         winnerId,
         result,
         explanation:
-          `${a.name} received ${scoreA}/100 and ${b.name} received ${scoreB}/100 using the fallback rating calculation.`,
-        teamAAnalysis: [],
-        teamBAnalysis: [],
-        analysisStatus: 'unavailable'
+          `${a.name} received ${scoreA}/100 and ${b.name} received ${scoreB}/100 using the fallback team-strength calculation.`,
+        teamAAnalysis: buildCharacterAnalysis(a.team, b.team),
+        teamBAnalysis: buildCharacterAnalysis(b.team, a.team),
+        analysisStatus: 'fallback'
       });
     }
   }
 
-  const standings = calculateStandings(room, matches);
+  const evaluations = room.players.map(player => ({
+    playerId: player.id,
+    score: calculateTeamStrength(player.team),
+    summary: 'Provisional team evaluation based on character ratings and available team attributes.',
+    strengths: [],
+    weaknesses: [],
+    synergy: 'Fallback calculation; detailed Gemini analysis was unavailable.',
+    balance: 'Based on the available character ratings.',
+    vulnerabilities: [],
+    keyContributions: [],
+    rankingRationale: 'Provisional ranking using the combined scoring formula.'
+  }));
+
+  const standings = calculateStandings(room, matches, evaluations);
 
   return {
     matches,
@@ -1208,9 +1098,9 @@ function createFallbackChampionship(room, errorMessage) {
     totalMatches: matches.length,
     completedAt: Date.now(),
     overallSummary:
-      'Gemini could not complete the detailed character matchup evaluation. These provisional results use character ratings only.',
+      'Gemini could not complete the detailed evaluation. These are provisional results based on character ratings and team attributes.',
     rankingExplanation:
-      'These are fallback rankings, not AI matchup rankings. Match wins award 3 points, draws award 1 point and losses award 0 points.',
+      'The combined formula is still applied, but the team-evaluation component uses the fallback rating calculation.',
     aiEvaluation: {
       provider: 'Gemini',
       status: 'unavailable',
@@ -1220,10 +1110,12 @@ function createFallbackChampionship(room, errorMessage) {
       )
     },
     rankingRules: [
+      'Combined score = 70% normalized head-to-head match points + 30% overall team evaluation.',
       'Match win: 3 points',
       'Match draw: 1 point',
       'Match loss: 0 points',
-      'Fallback tiebreakers: wins, score difference, then average character rating'
+      'Tiebreakers: combined score, match points, wins, score difference, team evaluation score.',
+      'Fallback team evaluation is based on character ratings and team attributes.'
     ]
   };
 }
@@ -1243,11 +1135,11 @@ async function evaluateChampionshipWithGemini(room) {
       genre: character.universe,
       version: character.version,
       rating: character.rating,
-      abilities: character.abilities,
-      strengths: character.strengths,
-      weaknesses: character.weaknesses,
-      description: character.description,
-      style: character.combatStyle
+      abilities: character.abilities || [],
+      strengths: character.strengths || [],
+      weaknesses: character.weaknesses || [],
+      description: character.description || '',
+      style: character.combatStyle || ''
     }))
   }));
 
@@ -1262,235 +1154,84 @@ async function evaluateChampionshipWithGemini(room) {
     }
   }
 
+  // Compact response: Gemini evaluates teams and pair scores.
+  // Character-by-character matchup details are then constructed from supplied data.
   const prompt = `
-You are the neutral and fair judge of a fictional and sporting team-building championship.
+You are a neutral judge for a fictional and sporting team-building championship.
 
-Your job is to analyse every team and every possible head-to-head matchup.
+Evaluate all supplied teams and every required head-to-head pair.
 
-IMPORTANT RULES:
+Rules:
+- Use only supplied character information.
+- Do not invent abilities, achievements, equipment or weaknesses.
+- Ratings are supporting information, not the only deciding factor.
+- Consider team composition, balance, role diversity, strengths, weaknesses and synergy.
+- For Football and Cricket, judge sporting skills, positions and team balance.
+- For fictional characters, keep the evaluation non-graphic and focused on fictional abilities and strategy.
+- Do not automatically favour famous characters.
+- Scores must be integers from 1 to 100.
+- Matchup winner must match the higher score. Use null for a draw.
+- Return every team exactly once and every requested matchup exactly once.
 
-1. Use ONLY the character information supplied.
-2. Never invent powers, abilities, achievements, weaknesses or equipment.
-3. Do not automatically favour famous or highly rated characters.
-4. Ratings are supporting information, not the deciding factor.
-5. Evaluate how abilities and weaknesses interact.
-6. Explain uncertainty when characters belong to different fictional universes.
-7. Keep all explanations non-graphic and focused on fictional abilities, tactics and strategy.
-8. For Football and Cricket, evaluate sporting roles, skills, strengths, weaknesses and team balance instead of fictional combat.
-
-TEAM EVALUATION:
-
-For every player, provide:
-- Score from 1 to 100.
-- Overall summary.
-- Strengths.
-- Weaknesses.
-- Synergy.
-- Balance.
-- Vulnerabilities.
-- Key contributions of every character.
-- Ranking rationale.
-
-HEAD-TO-HEAD EVALUATION:
-
-Every unordered pair of teams must be evaluated exactly once.
-
-For EACH matchup:
-
-A. Evaluate team A against team B.
-B. Evaluate team B against team A.
-C. Give each team a matchup score from 1 to 100.
-D. Choose the winner based on the actual matchup analysis.
-E. Explain why the winner has an advantage or why it is a draw.
-
-CHARACTER-BY-CHARACTER ANALYSIS:
-
-For EVERY character in team A:
-- Identify the specific opposing characters they match up well against.
-- Identify opposing characters who create disadvantages for them.
-- Explain their advantages.
-- Explain their disadvantages.
-- Explain their contribution to the overall matchup.
-- Identify their tactical role.
-
-Repeat this process for EVERY character in team B.
-
-Do not provide generic statements such as "strong character" or "good abilities".
-Use the actual supplied character names and abilities.
-
-Each character must have:
-- At least one advantage.
-- At least one disadvantage.
-- An explanation of impact.
-- A tactical role.
-- Opponent-specific matchup details.
-
-Do not assume that a character defeats every opponent.
-A character can have an advantage against one opponent and a disadvantage against another.
-
-MATCHUP SCORING:
-
-- Scores must reflect the matchup rather than copied team ratings.
-- A team with better overall ratings can lose a particular matchup if its abilities and composition are poorly suited to the opponent.
-- Consider coverage, role diversity, weaknesses, counterplay, coordination and synergy.
-- Do not award a winner solely because of a higher average character rating.
-- A close matchup can be a draw.
-- winnerId must match the team with the higher matchup score, or null for a draw.
-
-RETURN JSON ONLY.
-
-Use EXACTLY this structure:
-
+Return JSON only:
 {
-  "overallSummary": "Championship overview",
-  "rankingExplanation": "How the standings were determined",
+  "overallSummary": "Short championship summary",
   "teams": [
     {
-      "playerId": "EXACT_PLAYER_ID",
+      "playerId": "EXACT_ID",
       "score": 90,
-      "summary": "Team evaluation",
+      "summary": "Team summary",
       "strengths": ["Strength"],
       "weaknesses": ["Weakness"],
-      "synergy": "Team synergy",
-      "balance": "Team balance",
+      "synergy": "Synergy explanation",
+      "balance": "Balance explanation",
       "vulnerabilities": ["Vulnerability"],
       "keyContributions": [
-        {
-          "characterName": "Exact character name",
-          "contribution": "Contribution"
-        }
+        {"characterName": "Exact character name", "contribution": "Contribution"}
       ],
-      "rankingRationale": "Ranking rationale"
+      "rankingRationale": "Why this team received this evaluation"
     }
   ],
   "matchups": [
     {
-      "teamAId": "EXACT_PLAYER_ID",
-      "teamBId": "EXACT_PLAYER_ID",
+      "teamAId": "EXACT_ID",
+      "teamBId": "EXACT_ID",
       "scoreA": 85,
       "scoreB": 80,
-      "winnerId": "EXACT_PLAYER_ID",
-      "explanation": "Detailed matchup explanation",
-      "teamAAnalysis": [
-        {
-          "characterName": "Exact character name",
-          "opponentMatchups": [
-            {
-              "opponentName": "Exact opposing character name",
-              "advantage": "Specific advantage or disadvantage",
-              "disadvantage": "Specific limitation",
-              "impact": "How this affects the matchup"
-            }
-          ],
-          "advantages": ["Specific advantage"],
-          "disadvantages": ["Specific disadvantage"],
-          "impact": "Overall character contribution",
-          "tacticalRole": "Role in this matchup"
-        }
-      ],
-      "teamBAnalysis": [
-        {
-          "characterName": "Exact character name",
-          "opponentMatchups": [
-            {
-              "opponentName": "Exact opposing character name",
-              "advantage": "Specific advantage or disadvantage",
-              "disadvantage": "Specific limitation",
-              "impact": "How this affects the matchup"
-            }
-          ],
-          "advantages": ["Specific advantage"],
-          "disadvantages": ["Specific disadvantage"],
-          "impact": "Overall character contribution",
-          "tacticalRole": "Role in this matchup"
-        }
-      ]
+      "winnerId": "EXACT_ID or null",
+      "explanation": "Short matchup explanation"
     }
   ]
 }
 
-VALIDATION REQUIREMENTS:
-
-- Every player must appear exactly once in teams.
-- Every unordered pair of players must appear exactly once in matchups.
-- Use the exact player IDs supplied.
-- Every character in every team must appear exactly once in that team's matchup analysis for each matchup.
-- Use exact character names.
-- Every character must have advantages and disadvantages.
-- Do not omit character matchup details.
-- winnerId must be teamAId, teamBId, or null.
-- Do not include Markdown or text outside JSON.
-
 TEAMS:
 ${JSON.stringify(teams)}
 
-REQUIRED MATCHUP PAIRS:
+REQUIRED PAIRS:
 ${JSON.stringify(expectedPairs)}
 `;
 
-  // Retry once if Gemini produces incomplete or invalid data.
-  let parsed = null;
-  let lastError = null;
+  const result = await generateWithRetry(
+    model,
+    prompt,
+    'Championship evaluation'
+  );
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const result = await model.generateContent(
-        attempt === 1
-          ? prompt
-          : `${prompt}
+  const parsed = extractJSON(result.response.text());
 
-IMPORTANT: Your previous response was incomplete or invalid.
-Return the complete JSON structure. Do not omit any player,
-matchup or character analysis.`
-      );
-
-      parsed = extractJSON(result.response.text());
-
-      break;
-
-    } catch (error) {
-      lastError = error;
-
-      console.warn(
-        `Championship Gemini attempt ${attempt} failed:`,
-        error.message
-      );
-    }
+  if (!Array.isArray(parsed.teams) || !Array.isArray(parsed.matchups)) {
+    throw new Error('Gemini returned an incomplete championship evaluation.');
   }
 
-  if (!parsed) {
-    throw lastError || new Error('Gemini did not return an evaluation.');
-  }
-
-  if (
-    !Array.isArray(parsed.teams) ||
-    !Array.isArray(parsed.matchups)
-  ) {
-    throw new Error(
-      'Gemini returned an incomplete championship evaluation.'
-    );
-  }
-
-  const playerIds = room.players.map(player => player.id);
-  const validIds = new Set(playerIds);
-
-  // ------------------------------------------------
-  // VALIDATE TEAM EVALUATIONS
-  // ------------------------------------------------
-
+  const validIds = new Set(room.players.map(p => p.id));
   const evaluationMap = new Map();
 
   for (const entry of parsed.teams) {
-    if (!validIds.has(entry.playerId)) {
-      throw new Error('Gemini returned an unknown player ID.');
-    }
-
-    if (evaluationMap.has(entry.playerId)) {
-      throw new Error('Gemini returned a duplicate team evaluation.');
+    if (!validIds.has(entry.playerId) || evaluationMap.has(entry.playerId)) {
+      throw new Error('Gemini returned an unknown or duplicate team evaluation.');
     }
 
     const score = Number(entry.score);
-
     if (!Number.isFinite(score)) {
       throw new Error('Gemini returned an invalid team score.');
     }
@@ -1500,10 +1241,7 @@ matchup or character analysis.`
     const contributions = Array.isArray(entry.keyContributions)
       ? entry.keyContributions.slice(0, 20).map(item => ({
           characterName: safeText(item.characterName, 'Team member'),
-          contribution: safeText(
-            item.contribution,
-            'Contribution not specified.'
-          )
+          contribution: safeText(item.contribution, 'Contribution not specified.')
         }))
       : [];
 
@@ -1513,83 +1251,54 @@ matchup or character analysis.`
       summary: safeText(entry.summary, 'Team evaluated by Gemini.'),
       strengths: cleanList(entry.strengths),
       weaknesses: cleanList(entry.weaknesses),
-      synergy: safeText(entry.synergy, 'No synergy explanation supplied.'),
-      balance: safeText(entry.balance, 'No balance explanation supplied.'),
+      synergy: safeText(entry.synergy),
+      balance: safeText(entry.balance),
       vulnerabilities: cleanList(entry.vulnerabilities),
       keyContributions: contributions,
-      rankingRationale: safeText(
-        entry.rankingRationale,
-        'No ranking rationale supplied.'
-      ),
+      rankingRationale: safeText(entry.rankingRationale),
       team: player.team
     });
   }
 
   if (evaluationMap.size !== room.players.length) {
-    throw new Error(
-      'Gemini did not evaluate every player exactly once.'
-    );
+    throw new Error('Gemini did not evaluate every player exactly once.');
   }
 
-  // ------------------------------------------------
-  // VALIDATE ALL HEAD-TO-HEAD MATCHUPS
-  // ------------------------------------------------
-
-  const expectedPairSet = new Set(
+  const expectedSet = new Set(
     expectedPairs.map(pair =>
       [pair.teamAId, pair.teamBId].sort().join('|')
     )
   );
 
-  const actualPairSet = new Set();
+  const actualSet = new Set();
   const matches = [];
 
   for (const entry of parsed.matchups) {
     const aId = entry.teamAId;
     const bId = entry.teamBId;
 
-    if (
-      !validIds.has(aId) ||
-      !validIds.has(bId) ||
-      aId === bId
-    ) {
+    if (!validIds.has(aId) || !validIds.has(bId) || aId === bId) {
       throw new Error('Gemini returned an invalid matchup.');
     }
 
-    const pairKey = [aId, bId].sort().join('|');
+    const key = [aId, bId].sort().join('|');
 
-    if (
-      !expectedPairSet.has(pairKey) ||
-      actualPairSet.has(pairKey)
-    ) {
-      throw new Error(
-        'Gemini returned a duplicate or unexpected matchup.'
-      );
+    if (!expectedSet.has(key) || actualSet.has(key)) {
+      throw new Error('Gemini returned a duplicate or unexpected matchup.');
     }
 
-    actualPairSet.add(pairKey);
+    actualSet.add(key);
 
     const scoreA = Number(entry.scoreA);
     const scoreB = Number(entry.scoreB);
 
-    if (
-      !Number.isFinite(scoreA) ||
-      !Number.isFinite(scoreB)
-    ) {
+    if (!Number.isFinite(scoreA) || !Number.isFinite(scoreB)) {
       throw new Error('Gemini returned invalid matchup scores.');
     }
 
-    const cleanScoreA = Math.max(
-      1,
-      Math.min(100, Math.round(scoreA))
-    );
+    const cleanScoreA = Math.max(1, Math.min(100, Math.round(scoreA)));
+    const cleanScoreB = Math.max(1, Math.min(100, Math.round(scoreB)));
 
-    const cleanScoreB = Math.max(
-      1,
-      Math.min(100, Math.round(scoreB))
-    );
-
-    // The scores determine the winner.
     let winnerId = null;
     let result = 'DRAW';
 
@@ -1601,29 +1310,8 @@ matchup or character analysis.`
       result = 'TEAM_B_WINS';
     }
 
-    if (
-      entry.winnerId !== null &&
-      entry.winnerId !== undefined &&
-      entry.winnerId !== winnerId
-    ) {
-      throw new Error(
-        'Gemini returned a winner inconsistent with its matchup scores.'
-      );
-    }
-
     const playerA = findPlayer(room, aId);
     const playerB = findPlayer(room, bId);
-
-    // Character analysis is mandatory for both teams.
-    const teamAAnalysis = normalizeCharacterAnalysis(
-      entry.teamAAnalysis,
-      playerA.team
-    );
-
-    const teamBAnalysis = normalizeCharacterAnalysis(
-      entry.teamBAnalysis,
-      playerB.team
-    );
 
     matches.push({
       teamAId: aId,
@@ -1634,67 +1322,50 @@ matchup or character analysis.`
       scoreB: cleanScoreB,
       winnerId,
       result,
-
       explanation: safeText(
         entry.explanation,
-        `${playerA.name} scored ${cleanScoreA}/100 and ${playerB.name} scored ${cleanScoreB}/100.`
+        `${playerA.name}: ${cleanScoreA}/100. ${playerB.name}: ${cleanScoreB}/100.`
       ),
-
-      teamAAnalysis,
-      teamBAnalysis,
-
+      teamAAnalysis: buildCharacterAnalysis(playerA.team, playerB.team),
+      teamBAnalysis: buildCharacterAnalysis(playerB.team, playerA.team),
       analysisStatus: 'complete'
     });
   }
 
-  if (actualPairSet.size !== expectedPairSet.size) {
-    throw new Error(
-      'Gemini did not evaluate every head-to-head matchup.'
-    );
+  if (actualSet.size !== expectedSet.size) {
+    throw new Error('Gemini did not evaluate every head-to-head matchup.');
   }
-
-  // ------------------------------------------------
-  // CREATE FINAL STANDINGS
-  // ------------------------------------------------
 
   const evaluations = room.players.map(player =>
     evaluationMap.get(player.id)
   );
 
-  const standings = calculateStandings(
-    room,
-    matches,
-    evaluations
-  );
+  const standings = calculateStandings(room, matches, evaluations);
 
   return {
     matches,
     standings,
     totalMatches: matches.length,
     completedAt: Date.now(),
-
     overallSummary: safeText(
       parsed.overallSummary,
       'The championship has been evaluated.'
     ),
-
-    rankingExplanation: safeText(
-      parsed.rankingExplanation,
-      'Rankings are calculated from validated head-to-head matchup results.'
-    ),
-
+    rankingExplanation:
+      'Final ranking combines 70% normalized head-to-head match points and 30% Gemini overall team evaluation.',
     aiEvaluation: {
       provider: 'Gemini',
       status: 'complete',
       message:
-        'All team evaluations, head-to-head matchups and character-by-character analyses were validated.'
+        'Gemini evaluated every team and every head-to-head matchup. Character-level matchup details are generated from the supplied character profiles.'
     },
-
     rankingRules: [
+      '70% of the final score comes from normalized head-to-head match points.',
+      '30% of the final score comes from Gemini overall team evaluation.',
       'Match win: 3 points',
       'Match draw: 1 point',
       'Match loss: 0 points',
-      'Tiebreakers: wins, score difference, then Gemini team evaluation score'
+      'Tiebreakers: combined score, match points, wins, score difference, team evaluation score.'
     ]
   };
 }
@@ -1719,18 +1390,14 @@ async function startChampionship(room) {
     standings: [],
     totalMatches: 0,
     completedAt: null,
-
-    overallSummary: 'Evaluating every team and character matchup...',
-
+    overallSummary: 'Evaluating every team and matchup...',
     rankingExplanation:
-      'Gemini is analysing the individual characters and team combinations.',
-
+      'The final ranking will combine head-to-head results and overall team evaluation.',
     aiEvaluation: {
       provider: 'Gemini',
       status: 'evaluating',
-      message: 'Character-by-character evaluation is in progress.'
+      message: 'Championship evaluation is in progress.'
     },
-
     rankingRules: []
   };
 
@@ -1742,26 +1409,15 @@ async function startChampionship(room) {
     if (!rooms.has(room.code)) return;
 
     room.championship = evaluation;
-
     emitRoom(room);
 
-    console.log(
-      `Gemini character-by-character championship completed for ${room.code}`
-    );
-
+    console.log(`Championship completed for room ${room.code}`);
   } catch (error) {
-    console.error(
-      'Gemini championship evaluation failed:',
-      error
-    );
+    console.error('Gemini championship evaluation failed:', error);
 
     if (!rooms.has(room.code)) return;
 
-    room.championship = createFallbackChampionship(
-      room,
-      error.message
-    );
-
+    room.championship = createFallbackChampionship(room, error.message);
     emitRoom(room);
   }
 }
@@ -1772,14 +1428,9 @@ async function startChampionship(room) {
 
 function isHost(room, socket) {
   if (!room || room.hostId !== socket.id) {
-    socket.emit(
-      'error:message',
-      'Only the host can perform this action.'
-    );
-
+    socket.emit('error:message', 'Only the host can perform this action.');
     return false;
   }
-
   return true;
 }
 
@@ -1800,12 +1451,6 @@ app.get('/api/universes', (_req, res) => {
 });
 
 app.post('/api/research', async (req, res) => {
-  if (!process.env.GEMINI_API_KEY) {
-    return res.status(503).json({
-      error: 'Gemini is not configured. Add GEMINI_API_KEY to Render.'
-    });
-  }
-
   const genre = String(req.body?.universe || '').trim();
 
   if (!GENRES.includes(genre)) {
@@ -1818,11 +1463,10 @@ app.post('/api/research', async (req, res) => {
     const characters = await getGenreCharacters(genre);
 
     res.json({
-      note: 'Epic character lists contain warriors only. Other generated entries should be reviewed for accuracy.',
+      note: 'Epic character lists are curated. Other generated entries should be reviewed for accuracy.',
       count: characters.length,
       characters
     });
-
   } catch (error) {
     res.status(502).json({
       error: 'Character generation failed.',
@@ -1840,7 +1484,6 @@ io.on('connection', socket => {
   // CREATE ROOM
   socket.on('room:create', ({ name, settings = {} } = {}) => {
     let code;
-
     do {
       code = roomCode();
     } while (rooms.has(code));
@@ -1859,7 +1502,6 @@ io.on('connection', socket => {
       code,
       hostId: socket.id,
       status: 'lobby',
-
       settings: {
         startingBudget,
         teamSize: 3,
@@ -1868,7 +1510,6 @@ io.on('connection', socket => {
         universes: ['Marvel', 'DC'],
         ...settings
       },
-
       players: [player],
       characters: [],
       characterIndex: -1,
@@ -1904,10 +1545,7 @@ io.on('connection', socket => {
     const room = rooms.get(String(code || '').toUpperCase());
 
     if (!room || room.status !== 'lobby') {
-      return socket.emit(
-        'error:message',
-        'Room not found or game already started.'
-      );
+      return socket.emit('error:message', 'Room not found or game already started.');
     }
 
     if (room.players.length >= 10) {
@@ -1936,51 +1574,24 @@ io.on('connection', socket => {
     turnSeconds,
     startingBid
   } = {}) => {
-
-    const room = [...rooms.values()].find(
-      r => r.hostId === socket.id
-    );
+    const room = [...rooms.values()].find(r => r.hostId === socket.id);
 
     if (!room || room.status !== 'lobby') return;
 
     if (room.players.length < 2) {
-      return socket.emit(
-        'error:message',
-        'At least two players are required.'
-      );
-    }
-
-    if (!process.env.GEMINI_API_KEY) {
-      return socket.emit(
-        'error:message',
-        'Gemini API key is missing. Add GEMINI_API_KEY to Render.'
-      );
+      return socket.emit('error:message', 'At least two players are required.');
     }
 
     const parsedTeamSize = Number(teamSize);
     const parsedTurnSeconds = Number(turnSeconds);
     const parsedStartingBid = Number(startingBid);
 
-    if (
-      !Number.isInteger(parsedTeamSize) ||
-      parsedTeamSize < 1 ||
-      parsedTeamSize > 20
-    ) {
-      return socket.emit(
-        'error:message',
-        'Team size must be between 1 and 20.'
-      );
+    if (!Number.isInteger(parsedTeamSize) || parsedTeamSize < 1 || parsedTeamSize > 20) {
+      return socket.emit('error:message', 'Team size must be between 1 and 20.');
     }
 
-    if (
-      !Number.isInteger(parsedTurnSeconds) ||
-      parsedTurnSeconds < 5 ||
-      parsedTurnSeconds > 120
-    ) {
-      return socket.emit(
-        'error:message',
-        'Turn duration must be between 5 and 120 seconds.'
-      );
+    if (!Number.isInteger(parsedTurnSeconds) || parsedTurnSeconds < 5 || parsedTurnSeconds > 120) {
+      return socket.emit('error:message', 'Turn duration must be between 5 and 120 seconds.');
     }
 
     if (
@@ -2000,14 +1611,21 @@ io.on('connection', socket => {
         : room.settings.universes.filter(value => GENRES.includes(value));
 
     if (!selectedGenres.length) {
+      return socket.emit('error:message', 'Choose at least one available genre.');
+    }
+
+    const needsGemini = selectedGenres.some(
+      genre => genre !== 'Ramayana' && genre !== 'Mahabharata'
+    );
+
+    if (needsGemini && !process.env.GEMINI_API_KEY) {
       return socket.emit(
         'error:message',
-        'Choose at least one available genre.'
+        'A Gemini API key is required for the selected genre. Ramayana and Mahabharata can be played without Gemini.'
       );
     }
 
-    const requiredCharacters =
-      room.players.length * parsedTeamSize;
+    const requiredCharacters = room.players.length * parsedTeamSize;
 
     room.status = 'loading_characters';
     room.completionError = null;
@@ -2026,7 +1644,6 @@ io.on('connection', socket => {
 
       for (const character of genrePools) {
         if (seenIds.has(character.id)) continue;
-
         seenIds.add(character.id);
         uniqueCharacters.push(character);
       }
@@ -2036,24 +1653,14 @@ io.on('connection', socket => {
 
         socket.emit(
           'error:message',
-          `Not enough characters. You need ${requiredCharacters}, but only ${uniqueCharacters.length} unique characters are available. Choose more genres or reduce the team size.`
+          `Not enough characters. You need ${requiredCharacters}, but only ${uniqueCharacters.length} unique characters are available. Choose more genres or reduce team size.`
         );
 
         emitRoom(room);
         return;
       }
 
-      room.characters = shuffle(uniqueCharacters)
-        .slice(0, requiredCharacters);
-
-      await attachCharacterImages(room.characters);
-
-      if (
-        room.status !== 'loading_characters' ||
-        !rooms.has(room.code)
-      ) {
-        return;
-      }
+      room.characters = shuffle(uniqueCharacters).slice(0, requiredCharacters);
 
       room.settings.teamSize = parsedTeamSize;
       room.settings.turnSeconds = parsedTurnSeconds;
@@ -2073,10 +1680,8 @@ io.on('connection', socket => {
       room.lastBidderId = null;
       room.currentTurnIndex = 0;
       room.currentTurnPlayerId = null;
-
       room.openingPlayerId = room.hostId;
       room.nextOpeningPlayerId = room.hostId;
-
       room.turnDeadline = null;
       room.turnToken = 0;
       room.noIncreaseTurns = 0;
@@ -2089,6 +1694,11 @@ io.on('connection', socket => {
       room.status = 'auction_ready';
 
       emitRoom(room);
+
+      // Images load in the background. They no longer block the auction.
+      attachCharacterImages(room).catch(error => {
+        console.warn('Background image loading failed:', error.message);
+      });
 
     } catch (error) {
       console.error('Character generation failed:', error);
@@ -2106,17 +1716,12 @@ io.on('connection', socket => {
 
   // HOST DEPLOYS NEXT RANDOM CHARACTER
   socket.on('auction:next-character', () => {
-    const room = [...rooms.values()].find(
-      r => r.hostId === socket.id
-    );
+    const room = [...rooms.values()].find(r => r.hostId === socket.id);
 
     if (!isHost(room, socket)) return;
 
     if (room.status !== 'auction_ready') {
-      return socket.emit(
-        'error:message',
-        'The next character is not ready yet.'
-      );
+      return socket.emit('error:message', 'The next character is not ready yet.');
     }
 
     if (room.characterIndex + 1 >= room.characters.length) {
@@ -2124,29 +1729,18 @@ io.on('connection', socket => {
     }
 
     room.characterIndex++;
-
-    room.currentCharacter =
-      clone(room.characters[room.characterIndex]);
-
+    room.currentCharacter = clone(room.characters[room.characterIndex]);
     room.currentBid = room.settings.startingBid;
     room.highestBidderId = null;
     room.lastBidderId = null;
     room.noIncreaseTurns = 0;
     room.passedPlayerIds = new Set();
 
-    room.openingPlayerId =
-      room.nextOpeningPlayerId || room.hostId;
+    room.openingPlayerId = room.nextOpeningPlayerId || room.hostId;
 
-    let openingPlayer = findPlayer(
-      room,
-      room.openingPlayerId
-    );
+    let openingPlayer = findPlayer(room, room.openingPlayerId);
 
-    if (
-      !openingPlayer ||
-      !openingPlayer.connected ||
-      !canBid(openingPlayer, room)
-    ) {
+    if (!openingPlayer || !openingPlayer.connected || !canBid(openingPlayer, room)) {
       openingPlayer = room.players.find(player =>
         player.connected && canBid(player, room)
       );
@@ -2162,31 +1756,21 @@ io.on('connection', socket => {
   // INCREASE BID
   socket.on('bid:increase', ({ amount } = {}) => {
     const room = findRoomForSocket(socket.id);
-
     if (!room || room.status !== 'auction') return;
 
     if (room.currentTurnPlayerId !== socket.id) {
-      return socket.emit(
-        'error:message',
-        'It is not your turn.'
-      );
+      return socket.emit('error:message', 'It is not your turn.');
     }
 
     if (!room.turnDeadline || Date.now() > room.turnDeadline) {
-      return socket.emit(
-        'error:message',
-        'Your turn has expired.'
-      );
+      return socket.emit('error:message', 'Your turn has expired.');
     }
 
     const player = findPlayer(room, socket.id);
     const increment = Number(amount);
 
     if (!Number.isInteger(increment) || increment < 1) {
-      return socket.emit(
-        'error:message',
-        'Enter a whole-number increase of at least ₹1.'
-      );
+      return socket.emit('error:message', 'Enter a whole-number increase of at least ₹1.');
     }
 
     if (player.team.length >= room.settings.teamSize) {
@@ -2196,10 +1780,7 @@ io.on('connection', socket => {
     const newBid = room.currentBid + increment;
 
     if (newBid > player.budget) {
-      return socket.emit(
-        'error:message',
-        'That bid exceeds your remaining budget.'
-      );
+      return socket.emit('error:message', 'That bid exceeds your remaining budget.');
     }
 
     stopTimer(room.code);
@@ -2207,7 +1788,6 @@ io.on('connection', socket => {
     room.currentBid = newBid;
     room.highestBidderId = player.id;
     room.lastBidderId = player.id;
-
     room.passedPlayerIds = new Set([player.id]);
     room.noIncreaseTurns = 0;
 
@@ -2220,28 +1800,20 @@ io.on('connection', socket => {
     });
 
     room.turnDeadline = null;
-
     finishTurnCycle(room);
   });
 
   // SKIP TURN
   socket.on('bid:skip', () => {
     const room = findRoomForSocket(socket.id);
-
     if (!room || room.status !== 'auction') return;
 
     if (room.currentTurnPlayerId !== socket.id) {
-      return socket.emit(
-        'error:message',
-        'It is not your turn.'
-      );
+      return socket.emit('error:message', 'It is not your turn.');
     }
 
     if (!room.turnDeadline || Date.now() > room.turnDeadline) {
-      return socket.emit(
-        'error:message',
-        'Your turn has expired.'
-      );
+      return socket.emit('error:message', 'Your turn has expired.');
     }
 
     passTurn(room, 'SKIP');
@@ -2249,9 +1821,7 @@ io.on('connection', socket => {
 
   // HOST STARTS TEAM COMPARISON
   socket.on('championship:start', async () => {
-    const room = [...rooms.values()].find(
-      r => r.hostId === socket.id
-    );
+    const room = [...rooms.values()].find(r => r.hostId === socket.id);
 
     if (!isHost(room, socket)) return;
 
@@ -2280,7 +1850,6 @@ io.on('connection', socket => {
   socket.on('disconnect', () => {
     for (const room of rooms.values()) {
       const player = findPlayer(room, socket.id);
-
       if (!player) continue;
 
       player.connected = false;
@@ -2288,12 +1857,10 @@ io.on('connection', socket => {
       if (room.status === 'auction') {
         if (room.currentTurnPlayerId === socket.id) {
           stopTimer(room.code);
-
           room.passedPlayerIds.add(socket.id);
           room.noIncreaseTurns = room.passedPlayerIds.size;
           room.currentTurnPlayerId = socket.id;
           room.turnDeadline = null;
-
           finishTurnCycle(room);
         } else {
           if (room.highestBidderId === socket.id) {
@@ -2310,7 +1877,6 @@ io.on('connection', socket => {
       }
     }
   });
-
 });
 
 // --------------------------------------------------
@@ -2319,13 +1885,15 @@ io.on('connection', socket => {
 
 app.use(express.static(path.join(__dirname, '..', 'dist')));
 
-app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api/')) {
-    return next();
-  }
+// RegExp route works with both Express 4 and Express 5.
+app.get(/.*/, (req, res, next) => {
+  if (req.path.startsWith('/api/')) return next();
 
   res.sendFile(
-    path.join(__dirname, '..', 'dist', 'index.html')
+    path.join(__dirname, '..', 'dist', 'index.html'),
+    error => {
+      if (error) next(error);
+    }
   );
 });
 
