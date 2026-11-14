@@ -859,3 +859,109 @@ footer {
     gap: 5px;
   }
 }
+
+/* CHARACTER GENERATION LOADING SCREEN */
+
+.loading-panel {
+  max-width: 750px;
+  margin: 65px auto;
+  padding: 45px 25px;
+  text-align: center;
+}
+
+.loading-orb {
+  width: 85px;
+  height: 85px;
+  margin: 0 auto 25px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 42px;
+  color: #f1d27e;
+  background: radial-gradient(circle, #344d78, #111d34);
+  border: 1px solid #d6b15b;
+  box-shadow: 0 0 35px #d6b15b55;
+  animation: loadingOrb 2s infinite ease-in-out;
+}
+
+.loading-bar {
+  height: 10px;
+  max-width: 500px;
+  margin: 30px auto 18px;
+  overflow: hidden;
+  border-radius: 20px;
+  background: #071020;
+  border: 1px solid #344768;
+}
+
+.loading-bar-fill {
+  width: 35%;
+  height: 100%;
+  border-radius: 20px;
+  background: linear-gradient(90deg, #b98d3e, #f3dc91);
+  animation: loadingProgress 1.8s infinite ease-in-out;
+}
+
+.loading-message {
+  color: #e8c977;
+  font: 700 12px Orbitron;
+  letter-spacing: 2px;
+}
+
+/* PRIVATE TEAM REVEAL */
+
+.reveal-panel {
+  max-width: 800px;
+  margin: 25px auto;
+}
+
+.reveal-panel h2 {
+  border-bottom: 1px solid #2b3d60;
+  padding-bottom: 15px;
+}
+
+.reveal-panel .team-characters {
+  display: grid;
+  gap: 5px;
+}
+
+.compare-button {
+  max-width: 500px;
+  display: block;
+  margin: 30px auto;
+  padding: 18px;
+  font-size: 14px;
+  box-shadow: 0 0 25px #d6b15b44;
+}
+
+.compare-button:hover {
+  filter: brightness(1.15);
+  transform: translateY(-2px);
+}
+
+@keyframes loadingOrb {
+  50% {
+    transform: scale(1.08) rotate(15deg);
+    box-shadow: 0 0 55px #d6b15b88;
+  }
+}
+
+@keyframes loadingProgress {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(310%);
+  }
+}
+
+@media(max-width: 760px) {
+  .loading-panel {
+    margin: 30px auto;
+    padding: 30px 18px;
+  }
+
+  .compare-button {
+    max-width: 100%;
+  }
+}
