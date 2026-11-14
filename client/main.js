@@ -11,6 +11,7 @@ let selectedBidIncrement = 1;
 let errorMessage = '';
 let toastTimer;
 let timerInterval;
+let latestStateVersion = -1;
 
 const root = document.querySelector('#root');
 
@@ -36,10 +37,50 @@ const escapeHtml = value =>
 
 const me = () => room?.players?.find(player => player.id === socket.id);
 const activePlayers = () => room?.players?.filter(player => player.connected) || [];
-const currentPlayer = () => activePlayers()[room?.currentTurnIndex];
+
+// Prefer the stable player ID supplied by the server.
+// Keep the index fallback for compatibility with the older backend.
+const currentPlayer = () => {
+  if (room?.currentTurnPlayerId) {
+    return room.players?.find(
+      player => player.id === room.currentTurnPlayerId
+    ) || null;
+  }
+
+  return activePlayers()[room?.currentTurnIndex] || null;
+};
+
 const money = value => `₹${Number(value || 0)}`;
 const list = value => Array.isArray(value) ? value : [];
 const isHost = () => room?.hostId === socket.id;
+
+function acceptRoomUpdate(data) {
+  if (!data) return;
+
+  const incomingVersion = Number(data.stateVersion);
+
+  // Ignore older updates from the same room.
+  if (
+    room &&
+    data.code === room.code &&
+    Number.isFinite(incomingVersion) &&
+    incomingVersion > 0 &&
+    latestStateVersion >= 0 &&
+    incomingVersion < latestStateVersion
+  ) {
+    return;
+  }
+
+  if (
+    Number.isFinite(incomingVersion) &&
+    incomingVersion > 0
+  ) {
+    latestStateVersion = incomingVersion;
+  }
+
+  room = data;
+  render();
+}
 
 function toast(message) {
   errorMessage = message;
@@ -53,21 +94,26 @@ function toast(message) {
 }
 
 socket.on('room:created', data => {
+  latestStateVersion = -1;
   room = data;
+  if (Number(data?.stateVersion) > 0) {
+    latestStateVersion = Number(data.stateVersion);
+  }
   errorMessage = '';
   render();
 });
 
 socket.on('room:joined', data => {
+  latestStateVersion = -1;
   room = data;
+  if (Number(data?.stateVersion) > 0) {
+    latestStateVersion = Number(data.stateVersion);
+  }
   errorMessage = '';
   render();
 });
 
-socket.on('room:update', data => {
-  room = data;
-  render();
-});
+socket.on('room:update', acceptRoomUpdate);
 
 socket.on('error:message', toast);
 socket.on('connect', render);
@@ -780,6 +826,14 @@ function renderReadyForFight() {
 }
 
 function matchPlayerName(match, side) {
+  const playerId = side === 'a'
+    ? match.teamAId || match.playerAId
+    : match.teamBId || match.playerBId;
+
+  const byId = room.players?.find(player => player.id === playerId);
+
+  if (byId?.name) return byId.name;
+
   if (side === 'a') {
     return match.playerA?.name ||
       match.teamA?.name ||
@@ -798,12 +852,19 @@ function matchPlayerName(match, side) {
 function renderMatch(match, index) {
   const playerA = matchPlayerName(match, 'a');
   const playerB = matchPlayerName(match, 'b');
-  const winner = match.winnerName || match.winner?.name || '';
+
+  const winnerId = match.winnerId || match.winner?.id;
+  const winnerPlayer = room.players?.find(player => player.id === winnerId);
+  const winner = winnerPlayer?.name ||
+    match.winnerName ||
+    match.winner?.name ||
+    '';
 
   const isDraw =
     match.isDraw === true ||
     match.draw === true ||
-    match.result === 'draw';
+    match.result === 'draw' ||
+    (!winner && match.winnerId === null);
 
   const scoreA = match.scoreA ?? match.teamAScore ?? '';
   const scoreB = match.scoreB ?? match.teamBScore ?? '';
@@ -811,6 +872,7 @@ function renderMatch(match, index) {
   return `
     <div class="match-card">
       <div class="match-number">MATCH ${index + 1}</div>
+
       <div class="match-teams">
         <b>${escapeHtml(playerA)}</b>
         <span class="match-vs">VS</span>
@@ -825,8 +887,152 @@ function renderMatch(match, index) {
         ${isDraw ? 'DRAW' : winner ? `WINNER: ${escapeHtml(winner)}` : escapeHtml(match.result || 'RESULT')}
       </div>
 
-      ${match.explanation ? `<p class="muted">${escapeHtml(match.explanation)}</p>` : ''}
+      ${match.explanation ? `
+        <p class="muted">${escapeHtml(match.explanation)}</p>
+      ` : ''}
     </div>
+  `;
+}
+
+function findTeamEvaluation(player, championship) {
+  if (player.evaluation) return player.evaluation;
+  if (player.teamEvaluation) return player.teamEvaluation;
+  if (player.analysis) return player.analysis;
+
+  const evaluations = list(championship.teamEvaluations);
+  return evaluations.find(item => item.playerId === player.id) || {};
+}
+
+function renderBulletList(items, emptyText = 'No details provided.') {
+  const values = list(items);
+
+  if (!values.length) {
+    return `<p class="muted">${escapeHtml(emptyText)}</p>`;
+  }
+
+  return `
+    <ul class="analysis-list">
+      ${values.map(item => {
+        if (typeof item === 'string') {
+          return `<li>${escapeHtml(item)}</li>`;
+        }
+
+        return `<li>${escapeHtml(
+          item.description || item.contribution || item.reason || item.name || ''
+        )}</li>`;
+      }).join('')}
+    </ul>
+  `;
+}
+
+function renderContributions(items) {
+  const values = list(items);
+
+  if (!values.length) return '';
+
+  return `
+    <div class="analysis-section">
+      <h4>KEY CHARACTER CONTRIBUTIONS</h4>
+      <div class="contribution-list">
+        ${values.map(item => `
+          <div class="contribution-item">
+            <b>${escapeHtml(item.characterName || item.name || 'Character')}</b>
+            <p>${escapeHtml(item.contribution || item.description || '')}</p>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderTeamAnalysis(player, championship) {
+  const evaluation = findTeamEvaluation(player, championship);
+
+  const strengths = list(evaluation.strengths);
+  const weaknesses = list(evaluation.weaknesses);
+  const vulnerabilities = list(evaluation.vulnerabilities);
+  const contributions = list(evaluation.keyContributions);
+
+  const score = evaluation.score ??
+    evaluation.teamScore ??
+    player.teamStrength ??
+    0;
+
+  const summary = evaluation.summary ||
+    evaluation.overallSummary ||
+    player.aiSummary ||
+    'A detailed evaluation was not returned for this team.';
+
+  const synergy = evaluation.synergy;
+  const balance = evaluation.balance;
+
+  return `
+    <section class="team-analysis-card">
+      <div class="team-analysis-heading">
+        <div>
+          <div class="eyebrow">TEAM ANALYSIS</div>
+          <h3>${escapeHtml(player.name)}</h3>
+        </div>
+        <div class="analysis-score">
+          <strong>${Number(score)}/100</strong>
+          <small>TEAM SCORE</small>
+        </div>
+      </div>
+
+      <p class="analysis-summary">${escapeHtml(summary)}</p>
+
+      ${evaluation.rankingRationale ? `
+        <div class="analysis-section">
+          <h4>WHY THIS TEAM GOT THIS RANK</h4>
+          <p>${escapeHtml(evaluation.rankingRationale)}</p>
+        </div>
+      ` : ''}
+
+      <div class="analysis-columns">
+        <div class="analysis-section">
+          <h4>STRENGTHS</h4>
+          ${renderBulletList(strengths, 'No strengths were specified.')}
+        </div>
+
+        <div class="analysis-section">
+          <h4>WEAKNESSES</h4>
+          ${renderBulletList(weaknesses, 'No weaknesses were specified.')}
+        </div>
+
+        <div class="analysis-section">
+          <h4>VULNERABILITIES</h4>
+          ${renderBulletList(vulnerabilities, 'No specific vulnerabilities were listed.')}
+        </div>
+      </div>
+
+      ${(synergy || balance) ? `
+        <div class="analysis-columns">
+          ${synergy ? `
+            <div class="analysis-section">
+              <h4>TEAM SYNERGY</h4>
+              <p>${escapeHtml(
+                typeof synergy === 'string'
+                  ? synergy
+                  : synergy.explanation || synergy.description || JSON.stringify(synergy)
+              )}</p>
+            </div>
+          ` : ''}
+
+          ${balance ? `
+            <div class="analysis-section">
+              <h4>TEAM BALANCE</h4>
+              <p>${escapeHtml(
+                typeof balance === 'string'
+                  ? balance
+                  : balance.explanation || balance.description || JSON.stringify(balance)
+              )}</p>
+            </div>
+          ` : ''}
+        </div>
+      ` : ''}
+
+      ${renderContributions(contributions)}
+    </section>
   `;
 }
 
@@ -834,6 +1040,15 @@ function renderChampionship() {
   const championship = room.championship || {};
   const standings = list(championship.standings);
   const matches = list(championship.matches);
+  const aiEvaluation = championship.aiEvaluation || {};
+
+  const overallSummary = aiEvaluation.overallSummary ||
+    championship.overallSummary ||
+    '';
+
+  const rankingExplanation = aiEvaluation.rankingExplanation ||
+    championship.rankingExplanation ||
+    '';
 
   shell(`
     <main class="content">
@@ -841,9 +1056,17 @@ function renderChampionship() {
       <h1>THE BATTLE FOR THE CROWN</h1>
 
       <p class="intro">
-        Every team has faced every other team. Here are the match results
-        and final standings.
+        Every team has faced every other team. Here are the match results,
+        final standings and detailed team evaluations.
       </p>
+
+      ${overallSummary ? `
+        <section class="panel championship-summary">
+          <div class="eyebrow">CHAMPIONSHIP OVERVIEW</div>
+          <h2>THE FINAL VERDICT</h2>
+          <p>${escapeHtml(overallSummary)}</p>
+        </section>
+      ` : ''}
 
       <section class="panel">
         <h2>FINAL LEADERBOARD</h2>
@@ -883,6 +1106,13 @@ function renderChampionship() {
             )}
           </p>
         </div>
+
+        ${rankingExplanation ? `
+          <div class="analysis-section ranking-explanation">
+            <h3>WHY THE TEAMS ARE RANKED THIS WAY</h3>
+            <p>${escapeHtml(rankingExplanation)}</p>
+          </div>
+        ` : ''}
       </section>
 
       <section class="panel">
@@ -895,30 +1125,54 @@ function renderChampionship() {
       </section>
 
       <section class="panel">
+        <h2>DETAILED TEAM EVALUATIONS</h2>
+        <p class="muted">
+          These evaluations explain what each team does well, where it is vulnerable
+          and how its characters contribute to the overall team.
+        </p>
+
+        <div class="team-analysis-grid">
+          ${room.players.map(player =>
+            renderTeamAnalysis(player, championship)
+          ).join('')}
+        </div>
+      </section>
+
+      <section class="panel">
         <h2>FINAL TEAM ROSTERS</h2>
         <div class="team-grid">
-          ${room.players.map(player => `
-            <section class="panel">
-              <h2>${escapeHtml(player.name)}</h2>
-              <div class="team-characters">
-                ${player.team.map(character => `
-                  <div class="team-character">
-                    <b>${escapeHtml(character.name)}</b>
-                    <span>
-                      ${Number(character.rating || 0)}/100 ·
-                      ${character.allocatedFree ? 'FREE' : `Paid ${money(character.paid)}`}
-                    </span>
-                  </div>
-                `).join('')}
-              </div>
-              <div class="team-total">
-                TEAM STRENGTH
-                <b>${Number(
-                  standings.find(item => item.playerId === player.id)?.teamStrength || 0
-                )}</b>
-              </div>
-            </section>
-          `).join('')}
+          ${room.players.map(player => {
+            const evaluation = findTeamEvaluation(player, championship);
+            const standing = standings.find(
+              item => item.playerId === player.id
+            );
+
+            return `
+              <section class="panel">
+                <h2>${escapeHtml(player.name)}</h2>
+                <div class="team-characters">
+                  ${player.team.map(character => `
+                    <div class="team-character">
+                      <b>${escapeHtml(character.name)}</b>
+                      <span>
+                        ${Number(character.rating || 0)}/100 ·
+                        ${character.allocatedFree ? 'FREE' : `Paid ${money(character.paid)}`}
+                      </span>
+                    </div>
+                  `).join('')}
+                </div>
+                <div class="team-total">
+                  TEAM STRENGTH
+                  <b>${Number(
+                    standing?.teamStrength ??
+                    evaluation.score ??
+                    evaluation.teamScore ??
+                    0
+                  )}</b>
+                </div>
+              </section>
+            `;
+          }).join('')}
         </div>
       </section>
 
@@ -928,6 +1182,7 @@ function renderChampionship() {
 
   document.querySelector('#homeBtn').onclick = () => {
     room = null;
+    latestStateVersion = -1;
     errorMessage = '';
     render();
   };
