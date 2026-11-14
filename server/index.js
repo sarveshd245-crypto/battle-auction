@@ -13,7 +13,9 @@ app.use(cors());
 app.use(express.json());
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+const io = new Server(server, {
+  cors: { origin: '*' }
+});
 
 const PORT = process.env.PORT || 3000;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -33,7 +35,6 @@ const GENRES = [
   'Anime'
 ];
 
-// Existing approved characters retained as additional catalogue entries.
 const SEED_CHARACTERS = [
   {
     id: 'marvel-spider-man',
@@ -44,9 +45,9 @@ const SEED_CHARACTERS = [
     abilities: ['Spider-sense', 'Agility', 'Web-slinging'],
     strengths: ['Mobility', 'Reflexes', 'Improvisation'],
     weaknesses: ['Human-level durability'],
-    description: 'Peter Parker is a brilliant young hero whose spider-like abilities combine extraordinary agility, danger awareness and web-based mobility.',
+    description: 'Peter Parker is a brilliant hero with extraordinary agility and danger awareness.',
     combatStyle: 'Fast, mobile and improvisational',
-    sources: ['https://www.marvel.com/characters/spider-man-peter-parker']
+    sources: []
   },
   {
     id: 'marvel-iron-man',
@@ -57,9 +58,9 @@ const SEED_CHARACTERS = [
     abilities: ['Powered armour', 'Repulsors', 'Flight'],
     strengths: ['Technology', 'Range', 'Adaptability'],
     weaknesses: ['Armour dependence'],
-    description: 'Tony Stark is an inventor who uses advanced powered armour and technological tools.',
+    description: 'Tony Stark is an inventor who uses advanced powered armour.',
     combatStyle: 'Technology-driven ranged combat',
-    sources: ['https://www.marvel.com/characters/iron-man-tony-stark']
+    sources: []
   },
   {
     id: 'marvel-thor',
@@ -70,9 +71,9 @@ const SEED_CHARACTERS = [
     abilities: ['Asgardian physiology', 'Mjolnir', 'Lightning'],
     strengths: ['Durability', 'Strength', 'Energy projection'],
     weaknesses: ['Version-dependent limits'],
-    description: 'Thor is an Asgardian warrior with immense strength and control over storm energy.',
+    description: 'Thor is an Asgardian warrior with immense strength.',
     combatStyle: 'Powerful close combat and storm-based attacks',
-    sources: ['https://www.marvel.com/characters/thor-thor-odinson']
+    sources: []
   },
   {
     id: 'dc-batman',
@@ -84,8 +85,8 @@ const SEED_CHARACTERS = [
     strengths: ['Preparation', 'Strategy', 'Stealth'],
     weaknesses: ['Human physiology'],
     description: 'Bruce Wayne is a highly trained detective and strategist.',
-    combatStyle: 'Strategic, technical and stealth-oriented',
-    sources: ['https://www.dc.com/characters/batman']
+    combatStyle: 'Strategic and technical',
+    sources: []
   },
   {
     id: 'dc-superman',
@@ -96,9 +97,9 @@ const SEED_CHARACTERS = [
     abilities: ['Flight', 'Super strength', 'Heat vision'],
     strengths: ['Speed', 'Durability', 'Power'],
     weaknesses: ['Continuity-dependent vulnerabilities'],
-    description: 'Clark Kent is a Kryptonian whose abilities include exceptional strength, speed and flight.',
+    description: 'Clark Kent is a Kryptonian with exceptional strength and speed.',
     combatStyle: 'High-power physical and ranged combat',
-    sources: ['https://www.dc.com/characters/superman']
+    sources: []
   },
   {
     id: 'dc-wonder-woman',
@@ -110,8 +111,8 @@ const SEED_CHARACTERS = [
     strengths: ['Combat', 'Durability', 'Leadership'],
     weaknesses: ['Continuity-dependent limits'],
     description: 'Diana is an Amazonian warrior known for her strength and combat experience.',
-    combatStyle: 'Disciplined close combat and tactical defence',
-    sources: ['https://www.dc.com/characters/wonder-woman']
+    combatStyle: 'Disciplined close combat',
+    sources: []
   },
   {
     id: 'ramayana-hanuman',
@@ -122,9 +123,9 @@ const SEED_CHARACTERS = [
     abilities: ['Immense strength', 'Flight', 'Form-changing'],
     strengths: ['Devotion', 'Strength', 'Resilience'],
     weaknesses: ['Tradition-specific interpretations'],
-    description: 'Hanuman is revered in the Ramayana for extraordinary strength, courage, wisdom and devotion.',
-    combatStyle: 'Mythological strength and extraordinary mobility',
-    sources: ['https://www.valmiki.iitk.ac.in/']
+    description: 'Hanuman is revered for extraordinary strength, courage and devotion.',
+    combatStyle: 'Mythological strength and mobility',
+    sources: []
   },
   {
     id: 'mahabharata-arjuna',
@@ -135,11 +136,15 @@ const SEED_CHARACTERS = [
     abilities: ['Archery', 'Divine astras', 'Warfare'],
     strengths: ['Precision', 'Discipline', 'Combat skill'],
     weaknesses: ['Weapon and context constraints'],
-    description: 'Arjuna is one of the central warriors of the Mahabharata, renowned for exceptional archery.',
-    combatStyle: 'Precision archery and traditional warfare',
-    sources: ['https://www.sacred-texts.com/hin/']
+    description: 'Arjuna is renowned for exceptional archery.',
+    combatStyle: 'Precision archery',
+    sources: []
   }
 ];
+
+// --------------------------------------------------
+// GENERAL HELPERS
+// --------------------------------------------------
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -163,8 +168,8 @@ function slugify(value) {
     .replace(/^-|-$/g, '');
 }
 
-function extractJSON(text) {
-  const cleaned = String(text || '')
+function extractJSON(value) {
+  const cleaned = String(value || '')
     .replace(/```json/gi, '')
     .replace(/```/g, '')
     .trim();
@@ -179,7 +184,7 @@ function extractJSON(text) {
       return JSON.parse(cleaned.slice(start, end + 1));
     }
 
-    throw new Error('Gemini did not return valid JSON.');
+    throw new Error('Gemini returned invalid JSON.');
   }
 }
 
@@ -205,7 +210,6 @@ function normalizeCharacter(raw, genre) {
   if (!raw || typeof raw !== 'object') return null;
 
   const name = String(raw.name || '').trim().slice(0, 80);
-
   if (!name) return null;
 
   const rating = Math.round(Number(raw.rating));
@@ -228,17 +232,25 @@ function normalizeCharacter(raw, genre) {
   };
 }
 
-// Generate one batch at a time to reduce the risk of oversized responses.
-// A genre can contain fewer than 100 characters if Gemini cannot supply
-// 100 valid, distinct entries.
+function roomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+  return Array.from(
+    { length: 6 },
+    () => chars[Math.floor(Math.random() * chars.length)]
+  ).join('');
+}
+
+// --------------------------------------------------
+// GEMINI CHARACTER GENERATION
+// --------------------------------------------------
+
 async function generateGenreCharacters(genre) {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error('Gemini API key is missing. Add GEMINI_API_KEY in Render.');
   }
 
-  const genAI = new GoogleGenerativeAI(
-    process.env.GEMINI_API_KEY
-  );
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
   const model = genAI.getGenerativeModel({
     model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
@@ -252,30 +264,26 @@ async function generateGenreCharacters(genre) {
 
   for (let batch = 0; batch < 4; batch++) {
     const remaining = 100 - generated.length;
-
     if (remaining <= 0) break;
 
     const count = Math.min(25, remaining);
 
     const prompt = `
-Create up to ${count} distinct, established entries for the genre "${genre}".
-
-The entries will be used in a friendly character/team auction game.
+Create up to ${count} distinct established entries for "${genre}".
 
 Rules:
-- For Ramayana and Mahabharata, use established figures from the respective epic traditions.
-- For Football and Cricket, use real, established players from the sport.
-- For Marvel and DC, use established characters from the respective universes.
-- For Harry Potter, use established characters from the Harry Potter universe.
-- For Anime, use established characters from well-known anime series.
+- Ramayana and Mahabharata: established figures from the epic traditions.
+- Football and Cricket: real established players.
+- Marvel and DC: established characters from those universes.
+- Harry Potter: established characters from that universe.
+- Anime: established characters from well-known anime series.
 - Do not invent characters.
-- Do not repeat the same person or character.
-- For sports, use a suitable playing career or era in the version field.
-- Ratings are subjective GAME ratings from 1 to 100, not official statistics.
+- Do not repeat characters.
+- Ratings are subjective game ratings from 1 to 100.
 - Keep descriptions concise.
-- Return fewer entries if you cannot provide the requested number reliably.
+- Return fewer entries if necessary.
 
-Return valid JSON only in this exact structure:
+Return JSON only:
 {
   "characters": [
     {
@@ -286,7 +294,7 @@ Return valid JSON only in this exact structure:
       "strengths": ["Strength 1", "Strength 2"],
       "weaknesses": ["Weakness 1"],
       "description": "Short description",
-      "combatStyle": "Short description of playing or combat style"
+      "combatStyle": "Playing or combat style"
     }
   ]
 }
@@ -302,11 +310,9 @@ Return valid JSON only in this exact structure:
 
       for (const raw of entries) {
         const character = normalizeCharacter(raw, genre);
-
         if (!character) continue;
 
         const key = character.name.toLowerCase();
-
         if (seen.has(key)) continue;
 
         seen.add(key);
@@ -316,15 +322,12 @@ Return valid JSON only in this exact structure:
       }
     } catch (error) {
       console.warn(
-        `Gemini batch ${batch + 1} failed for ${genre}:`,
+        `Character batch ${batch + 1} failed for ${genre}:`,
         error.message
       );
-
-      // Continue with other batches instead of failing the whole genre.
     }
   }
 
-  // Add existing approved seed characters from this genre.
   for (const seed of SEED_CHARACTERS.filter(
     character => character.universe === genre
   )) {
@@ -348,30 +351,24 @@ async function getGenreCharacters(genre) {
     return genreCache.get(genre);
   }
 
-  const generationPromise = generateGenreCharacters(genre);
-
-  genreCache.set(genre, generationPromise);
+  const promise = generateGenreCharacters(genre);
+  genreCache.set(genre, promise);
 
   try {
-    return await generationPromise;
+    return await promise;
   } catch (error) {
     genreCache.delete(genre);
     throw error;
   }
 }
 
-function roomCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+// --------------------------------------------------
+// ROOM DATA AND PRIVATE TEAM VISIBILITY
+// --------------------------------------------------
 
-  return Array.from(
-    { length: 6 },
-    () => chars[Math.floor(Math.random() * chars.length)]
-  ).join('');
-}
-
-// A player sees their own team.
-// All teams become visible when the championship begins.
 function publicRoom(room, viewerId) {
+  const showAllTeams = room.status === 'championship';
+
   return {
     code: room.code,
     hostId: room.hostId,
@@ -383,7 +380,7 @@ function publicRoom(room, viewerId) {
       name: player.name,
       budget: player.budget,
       team:
-        room.status === 'championship' || player.id === viewerId
+        showAllTeams || player.id === viewerId
           ? player.team
           : [],
       connected: player.connected
@@ -394,10 +391,10 @@ function publicRoom(room, viewerId) {
     currentCharacter: room.currentCharacter,
     currentBid: room.currentBid,
     highestBidderId: room.highestBidderId,
+    lastBidderId: room.lastBidderId,
     currentTurnIndex: room.currentTurnIndex,
     turnDeadline: room.turnDeadline,
     noIncreaseTurns: room.noIncreaseTurns,
-    lastBidderId: room.lastBidderId,
     openingPlayerId: room.openingPlayerId,
     nextOpeningPlayerId: room.nextOpeningPlayerId,
     auctionLog: room.auctionLog,
@@ -409,7 +406,6 @@ function publicRoom(room, viewerId) {
 }
 
 function emitRoom(room) {
-  // Send a different team view to each player.
   for (const player of room.players) {
     io.to(player.id).emit(
       'room:update',
@@ -442,7 +438,8 @@ function getCurrentPlayer(room) {
   if (!players.length) return null;
 
   room.currentTurnIndex =
-    ((room.currentTurnIndex % players.length) + players.length) % players.length;
+    ((room.currentTurnIndex % players.length) + players.length) %
+    players.length;
 
   return players[room.currentTurnIndex];
 }
@@ -455,6 +452,10 @@ function canBid(player, room) {
     player.budget >= room.currentBid + 1
   );
 }
+
+// --------------------------------------------------
+// AUCTION TIMER AND TURN MANAGEMENT
+// --------------------------------------------------
 
 function beginTurn(room) {
   stopTimer(room.code);
@@ -470,17 +471,17 @@ function beginTurn(room) {
     return;
   }
 
-  if (room.noIncreaseTurns >= players.length) {
-    return resolveAuction(room);
-  }
+  let attempts = 0;
 
-  let tries = 0;
+  while (attempts < players.length) {
+    if (room.noIncreaseTurns >= players.length) {
+      return resolveAuction(room);
+    }
 
-  while (tries < players.length) {
     const player = getCurrentPlayer(room);
 
-    // Once the previous highest bidder's turn comes around again,
-    // the auction ends. This gives everyone else a chance to respond.
+    // The turn has returned to the highest bidder.
+    // They win the character.
     if (
       room.highestBidderId &&
       player?.id === room.highestBidderId
@@ -494,35 +495,37 @@ function beginTurn(room) {
     room.currentTurnIndex =
       (room.currentTurnIndex + 1) % players.length;
 
-    tries++;
-
-    if (room.noIncreaseTurns >= players.length) {
-      return resolveAuction(room);
-    }
+    attempts++;
   }
 
-  if (tries >= players.length) {
+  if (
+    attempts >= players.length ||
+    room.noIncreaseTurns >= players.length
+  ) {
     return resolveAuction(room);
   }
 
   room.turnDeadline =
     Date.now() + room.settings.turnSeconds * 1000;
 
+  room.turnToken = (room.turnToken || 0) + 1;
+  const token = room.turnToken;
+  const deadline = room.turnDeadline;
+
   emitRoom(room);
 
-  const delay = Math.max(0, room.turnDeadline - Date.now());
-
-  turnTimers.set(room.code, setTimeout(() => {
+  const timer = setTimeout(() => {
     const currentRoom = rooms.get(room.code);
 
-    if (
-      !currentRoom ||
-      currentRoom.status !== 'auction' ||
-      Date.now() < currentRoom.turnDeadline
-    ) return;
+    if (!currentRoom) return;
+    if (currentRoom.status !== 'auction') return;
+    if (currentRoom.turnToken !== token) return;
+    if (currentRoom.turnDeadline !== deadline) return;
 
     passTurn(currentRoom, 'TIMEOUT');
-  }, delay + 20));
+  }, room.settings.turnSeconds * 1000 + 100);
+
+  turnTimers.set(room.code, timer);
 }
 
 function nextTurn(room) {
@@ -559,17 +562,23 @@ function passTurn(room, reason = 'SKIP') {
   nextTurn(room);
 }
 
-function resolveAuction(room) {
-  stopTimer(room.code);
+// --------------------------------------------------
+// RESOLVE THE CURRENT AUCTION
+// --------------------------------------------------
 
+function resolveAuction(room) {
   if (room.status !== 'auction' || !room.currentCharacter) return;
 
-  const character = room.currentCharacter;
+  stopTimer(room.code);
+
+  const character = clone(room.currentCharacter);
   const winnerId = room.lastBidderId;
 
-  const winner = room.players.find(player =>
-    player.id === winnerId
+  const winner = room.players.find(
+    player => player.id === winnerId
   );
+
+  let awarded = false;
 
   if (
     winner &&
@@ -580,7 +589,7 @@ function resolveAuction(room) {
     winner.budget -= room.currentBid;
 
     winner.team.push({
-      ...clone(character),
+      ...character,
       paid: room.currentBid
     });
 
@@ -591,8 +600,12 @@ function resolveAuction(room) {
       winnerName: winner.name,
       amount: room.currentBid
     });
-  } else {
-    room.reserveCharacters.push(clone(character));
+
+    awarded = true;
+  }
+
+  if (!awarded) {
+    room.reserveCharacters.push(character);
 
     room.results.push({
       characterId: character.id,
@@ -606,25 +619,24 @@ function resolveAuction(room) {
   room.auctionLog.push({
     type: 'RESOLVED',
     characterId: character.id,
-    winnerId: winner?.id || null,
+    winnerId: awarded ? winner.id : null,
     at: Date.now()
   });
 
-  // The winner starts the next auction.
-  if (winner && winner.id) {
-    room.nextOpeningPlayerId = winner.id;
-  } else {
-    room.nextOpeningPlayerId =
-      room.openingPlayerId || room.hostId;
-  }
+  room.nextOpeningPlayerId = awarded
+    ? winner.id
+    : (room.openingPlayerId || room.hostId);
 
-  room.status = 'auction_ready';
+  room.currentCharacter = null;
   room.turnDeadline = null;
-  room.currentTurnIndex = 0;
+  room.currentBid = room.settings.startingBid;
   room.highestBidderId = null;
   room.lastBidderId = null;
   room.noIncreaseTurns = 0;
+  room.currentTurnIndex = 0;
+  room.status = 'auction_ready';
 
+  // The last character has now been awarded or reserved.
   if (room.characterIndex >= room.characters.length - 1) {
     completeAuction(room);
     return;
@@ -632,6 +644,10 @@ function resolveAuction(room) {
 
   emitRoom(room);
 }
+
+// --------------------------------------------------
+// FREE CHARACTER ALLOCATION AND TEAM REVEAL
+// --------------------------------------------------
 
 function completeAuction(room) {
   stopTimer(room.code);
@@ -644,38 +660,38 @@ function completeAuction(room) {
     }
   }
 
-  const assignedCharacterIds = new Set();
+  const assignedIds = new Set();
 
   for (const player of room.players) {
     for (const character of player.team) {
-      assignedCharacterIds.add(character.id);
+      assignedIds.add(character.id);
     }
   }
 
+  // Every selected character not already owned is available.
   const availableCharacters = room.characters.filter(
-    character => !assignedCharacterIds.has(character.id)
+    character => !assignedIds.has(character.id)
   );
 
   const freePool = shuffle(availableCharacters);
 
   if (freePool.length < emptySlots.length) {
     room.status = 'incomplete';
-    room.turnDeadline = null;
     room.currentCharacter = null;
+    room.turnDeadline = null;
 
     room.completionError =
-      `Not enough unused characters. ${emptySlots.length} slots are empty, but only ${freePool.length} unused characters remain.`;
+      `Not enough unused characters. ${emptySlots.length} slots are empty, but only ${freePool.length} characters remain.`;
 
     emitRoom(room);
     return;
   }
 
-  // Fill all empty team slots with free characters.
+  // Give free characters to players with empty slots.
+  // Their wallet balance does not matter.
   emptySlots.forEach((player, index) => {
-    const character = freePool[index];
-
     player.team.push({
-      ...clone(character),
+      ...clone(freePool[index]),
       paid: 0,
       allocatedFree: true
     });
@@ -687,16 +703,17 @@ function completeAuction(room) {
   room.turnDeadline = null;
   room.completionError = null;
 
-  // First show each player only their own completed team.
+  // Each player sees only their own team.
   room.status = 'team_reveal';
-
   emitRoom(room);
 
-  // After 10 seconds, the host can compare all teams.
   setTimeout(() => {
     const currentRoom = rooms.get(room.code);
 
-    if (!currentRoom || currentRoom.status !== 'team_reveal') {
+    if (
+      !currentRoom ||
+      currentRoom.status !== 'team_reveal'
+    ) {
       return;
     }
 
@@ -704,6 +721,10 @@ function completeAuction(room) {
     emitRoom(currentRoom);
   }, 10000);
 }
+
+// --------------------------------------------------
+// TEAM STRENGTH FALLBACK
+// --------------------------------------------------
 
 function calculateTeamStrength(team) {
   if (!team.length) return 0;
@@ -713,85 +734,82 @@ function calculateTeamStrength(team) {
     0
   );
 
-  const allStrengths = new Set(
+  const strengths = new Set(
     team.flatMap(character => character.strengths || [])
   );
 
-  const allAbilities = new Set(
+  const abilities = new Set(
     team.flatMap(character => character.abilities || [])
   );
 
   const synergy = Math.min(
     5,
-    Math.floor((allStrengths.size + allAbilities.size) / team.length)
+    Math.floor((strengths.size + abilities.size) / team.length)
   );
 
   return Math.round(ratings / team.length + synergy);
 }
 
-function createMatch(teamA, teamB) {
-  const scoreA = calculateTeamStrength(teamA.team);
-  const scoreB = calculateTeamStrength(teamB.team);
-
-  let winnerId = null;
-  let result = 'DRAW';
-
-  if (scoreA > scoreB) {
-    winnerId = teamA.id;
-    result = 'TEAM_A_WINS';
-  } else if (scoreB > scoreA) {
-    winnerId = teamB.id;
-    result = 'TEAM_B_WINS';
-  }
-
-  const explanation = result === 'DRAW'
-    ? 'Both teams have the same calculated strength. The match is recorded as a draw.'
-    : `${winnerId === teamA.id ? teamA.name : teamB.name} wins with a calculated team strength of ${Math.max(scoreA, scoreB)} compared with ${Math.min(scoreA, scoreB)}.`;
-
-  return {
-    teamAId: teamA.id,
-    teamAName: teamA.name,
-    teamBId: teamB.id,
-    teamBName: teamB.name,
-    scoreA,
-    scoreB,
-    winnerId,
-    result,
-    explanation
-  };
-}
-
-function startChampionship(room) {
+function createFallbackChampionship(room) {
   const matches = [];
 
   for (let i = 0; i < room.players.length; i++) {
     for (let j = i + 1; j < room.players.length; j++) {
-      matches.push(createMatch(room.players[i], room.players[j]));
+      const a = room.players[i];
+      const b = room.players[j];
+
+      const scoreA = calculateTeamStrength(a.team);
+      const scoreB = calculateTeamStrength(b.team);
+
+      let winnerId = null;
+      let result = 'DRAW';
+
+      if (scoreA > scoreB) {
+        winnerId = a.id;
+        result = 'TEAM_A_WINS';
+      } else if (scoreB > scoreA) {
+        winnerId = b.id;
+        result = 'TEAM_B_WINS';
+      }
+
+      matches.push({
+        teamAId: a.id,
+        teamAName: a.name,
+        teamBId: b.id,
+        teamBName: b.name,
+        scoreA,
+        scoreB,
+        winnerId,
+        result,
+        explanation: 'Fallback comparison based on team ratings.'
+      });
     }
   }
 
   const standings = room.players.map(player => {
     const played = matches.filter(match =>
-      match.teamAId === player.id || match.teamBId === player.id
+      match.teamAId === player.id ||
+      match.teamBId === player.id
     );
 
-    const wins = played.filter(match =>
-      match.winnerId === player.id
+    const wins = played.filter(
+      match => match.winnerId === player.id
     ).length;
 
-    const draws = played.filter(match =>
-      match.result === 'DRAW'
+    const draws = played.filter(
+      match => match.result === 'DRAW'
     ).length;
 
     const losses = played.length - wins - draws;
+
     const points = wins * 3 + draws;
 
     const scoreDifference = played.reduce((total, match) => {
-      if (match.teamAId === player.id) {
-        return total + match.scoreA - match.scoreB;
-      }
-
-      return total + match.scoreB - match.scoreA;
+      return total + (
+        match.teamAId === player.id
+          ? match.scoreA - match.scoreB
+          : match.scoreB - match.scoreA
+      );
     }, 0);
 
     return {
@@ -831,11 +849,16 @@ function startChampionship(room) {
     previousKey = key;
   });
 
-  room.championship = {
+  return {
     matches,
     standings,
     totalMatches: matches.length,
     completedAt: Date.now(),
+    aiEvaluation: {
+      provider: 'Gemini',
+      status: 'unavailable',
+      message: 'Using fallback character-rating comparison.'
+    },
     rankingRules: [
       'Match win: 3 points',
       'Match draw: 1 point',
@@ -843,11 +866,272 @@ function startChampionship(room) {
       'Tiebreakers: wins, score difference, then team strength'
     ]
   };
+}
 
+// --------------------------------------------------
+// GEMINI TEAM COMPARISON AND FINAL RANKINGS
+// --------------------------------------------------
+
+async function evaluateChampionshipWithGemini(room) {
+  const genAI = new GoogleGenerativeAI(
+    process.env.GEMINI_API_KEY
+  );
+
+  const model = genAI.getGenerativeModel({
+    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+    generationConfig: {
+      responseMimeType: 'application/json'
+    }
+  });
+
+  const teams = room.players.map(player => ({
+    playerId: player.id,
+    playerName: player.name,
+    characters: player.team.map(character => ({
+      name: character.name,
+      genre: character.universe,
+      rating: character.rating,
+      abilities: character.abilities,
+      strengths: character.strengths,
+      weaknesses: character.weaknesses,
+      description: character.description,
+      style: character.combatStyle
+    }))
+  }));
+
+  const prompt = `
+You are the neutral judge of a friendly team-building championship.
+
+Compare every team fairly using:
+- Individual character abilities and ratings.
+- Strengths and weaknesses.
+- Team balance and compatibility.
+- Complementary abilities and overall team composition.
+
+For Football and Cricket, consider sporting ability and team balance.
+For fictional teams, consider the supplied character abilities.
+Do not invent abilities.
+Do not favour a team merely because it has famous characters.
+
+Give each team a score from 1 to 100.
+Explain the reasoning briefly.
+
+Return JSON only in this structure:
+
+{
+  "teams": [
+    {
+      "playerId": "EXACT_PLAYER_ID",
+      "score": 90,
+      "summary": "Explanation of the team's strengths and weaknesses"
+    }
+  ]
+}
+
+Include every player exactly once.
+Use the exact playerId values provided.
+
+TEAMS:
+${JSON.stringify(teams)}
+`;
+
+  const result = await model.generateContent(prompt);
+  const parsed = extractJSON(result.response.text());
+
+  if (!Array.isArray(parsed.teams)) {
+    throw new Error('Gemini did not return a valid team list.');
+  }
+
+  const scoreMap = new Map();
+
+  for (const entry of parsed.teams) {
+    const score = Math.round(Number(entry.score));
+
+    if (
+      room.players.some(player => player.id === entry.playerId) &&
+      Number.isFinite(score)
+    ) {
+      scoreMap.set(entry.playerId, {
+        score: Math.max(1, Math.min(100, score)),
+        summary: String(
+          entry.summary || 'Team evaluated by Gemini.'
+        ).slice(0, 500)
+      });
+    }
+  }
+
+  if (scoreMap.size !== room.players.length) {
+    throw new Error('Gemini did not evaluate every team.');
+  }
+
+  const evaluatedPlayers = room.players.map(player => ({
+    ...player,
+    aiScore: scoreMap.get(player.id).score,
+    aiSummary: scoreMap.get(player.id).summary
+  }));
+
+  // Generate every head-to-head comparison.
+  const matches = [];
+
+  for (let i = 0; i < evaluatedPlayers.length; i++) {
+    for (let j = i + 1; j < evaluatedPlayers.length; j++) {
+      const a = evaluatedPlayers[i];
+      const b = evaluatedPlayers[j];
+
+      let winnerId = null;
+      let result = 'DRAW';
+
+      if (a.aiScore > b.aiScore) {
+        winnerId = a.id;
+        result = 'TEAM_A_WINS';
+      } else if (b.aiScore > a.aiScore) {
+        winnerId = b.id;
+        result = 'TEAM_B_WINS';
+      }
+
+      matches.push({
+        teamAId: a.id,
+        teamAName: a.name,
+        teamBId: b.id,
+        teamBName: b.name,
+        scoreA: a.aiScore,
+        scoreB: b.aiScore,
+        winnerId,
+        result,
+        explanation:
+          `${a.name}: ${a.aiScore}/100. ${a.aiSummary} ` +
+          `${b.name}: ${b.aiScore}/100. ${b.aiSummary}`
+      });
+    }
+  }
+
+  const standings = evaluatedPlayers.map(player => {
+    const played = matches.filter(match =>
+      match.teamAId === player.id ||
+      match.teamBId === player.id
+    );
+
+    const wins = played.filter(
+      match => match.winnerId === player.id
+    ).length;
+
+    const draws = played.filter(
+      match => match.result === 'DRAW'
+    ).length;
+
+    const losses = played.length - wins - draws;
+    const points = wins * 3 + draws;
+
+    const scoreDifference = played.reduce((total, match) => {
+      return total + (
+        match.teamAId === player.id
+          ? match.scoreA - match.scoreB
+          : match.scoreB - match.scoreA
+      );
+    }, 0);
+
+    return {
+      playerId: player.id,
+      name: player.name,
+      wins,
+      draws,
+      losses,
+      points,
+      scoreDifference,
+      teamStrength: player.aiScore,
+      aiSummary: player.aiSummary,
+      team: player.team
+    };
+  });
+
+  standings.sort((a, b) =>
+    b.points - a.points ||
+    b.wins - a.wins ||
+    b.scoreDifference - a.scoreDifference ||
+    b.teamStrength - a.teamStrength
+  );
+
+  let previousKey = null;
+  let rank = 0;
+
+  standings.forEach((standing, index) => {
+    const key = [
+      standing.points,
+      standing.wins,
+      standing.scoreDifference,
+      standing.teamStrength
+    ].join(':');
+
+    if (key !== previousKey) rank = index + 1;
+
+    standing.rank = rank;
+    previousKey = key;
+  });
+
+  return {
+    matches,
+    standings,
+    totalMatches: matches.length,
+    completedAt: Date.now(),
+    aiEvaluation: {
+      provider: 'Gemini',
+      status: 'complete'
+    },
+    rankingRules: [
+      'Match win: 3 points',
+      'Match draw: 1 point',
+      'Match loss: 0 points',
+      'Tiebreakers: wins, score difference, then Gemini team score'
+    ]
+  };
+}
+
+async function startChampionship(room) {
+  if (room.status !== 'ready_for_fight') return;
+
+  const incompletePlayer = room.players.find(
+    player => player.team.length !== room.settings.teamSize
+  );
+
+  if (incompletePlayer) {
+    return;
+  }
+
+  // Reveal all teams to everyone and show a loading result.
   room.status = 'championship';
+  room.championship = {
+    matches: [],
+    standings: [],
+    totalMatches: 0,
+    completedAt: null,
+    aiEvaluation: {
+      provider: 'Gemini',
+      status: 'evaluating'
+    },
+    rankingRules: []
+  };
 
   emitRoom(room);
+
+  try {
+    room.championship = await evaluateChampionshipWithGemini(room);
+    emitRoom(room);
+
+    console.log(`Gemini rankings completed for ${room.code}`);
+  } catch (error) {
+    console.error('Gemini team comparison failed:', error);
+
+    room.championship = createFallbackChampionship(room);
+    room.championship.aiEvaluation.message =
+      'Gemini comparison could not be completed. Fallback rankings are displayed.';
+
+    emitRoom(room);
+  }
 }
+
+// --------------------------------------------------
+// HOST VALIDATION
+// --------------------------------------------------
 
 function isHost(room, socket) {
   if (!room || room.hostId !== socket.id) {
@@ -862,7 +1146,9 @@ function isHost(room, socket) {
   return true;
 }
 
+// --------------------------------------------------
 // API ROUTES
+// --------------------------------------------------
 
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -907,10 +1193,13 @@ app.post('/api/research', async (req, res) => {
   }
 });
 
-// SOCKET EVENTS
+// --------------------------------------------------
+// SOCKET.IO EVENTS
+// --------------------------------------------------
 
 io.on('connection', socket => {
 
+  // CREATE ROOM
   socket.on('room:create', ({ name, settings = {} } = {}) => {
     let code;
 
@@ -953,6 +1242,7 @@ io.on('connection', socket => {
       openingPlayerId: socket.id,
       nextOpeningPlayerId: socket.id,
       turnDeadline: null,
+      turnToken: 0,
       noIncreaseTurns: 0,
       auctionLog: [],
       results: [],
@@ -968,6 +1258,7 @@ io.on('connection', socket => {
     emitRoom(room);
   });
 
+  // JOIN ROOM
   socket.on('room:join', ({ code, name } = {}) => {
     const room = rooms.get(String(code || '').toUpperCase());
 
@@ -997,6 +1288,7 @@ io.on('connection', socket => {
     emitRoom(room);
   });
 
+  // START GAME AND GENERATE CHARACTER POOL
   socket.on('room:start', async ({
     universes,
     teamSize,
@@ -1076,7 +1368,6 @@ io.on('connection', socket => {
     const requiredCharacters =
       room.players.length * parsedTeamSize;
 
-    // Prevent another start request while Gemini is generating.
     room.status = 'loading_characters';
     room.completionError = null;
     emitRoom(room);
@@ -1084,13 +1375,11 @@ io.on('connection', socket => {
     try {
       const genrePools = [];
 
-      // Generate/cache each selected genre.
       for (const genre of selectedGenres) {
         const characters = await getGenreCharacters(genre);
         genrePools.push(...characters);
       }
 
-      // Remove duplicates across selected genres.
       const uniqueCharacters = [];
       const seenIds = new Set();
 
@@ -1104,25 +1393,23 @@ io.on('connection', socket => {
       if (uniqueCharacters.length < requiredCharacters) {
         room.status = 'lobby';
 
-        const message =
-          `Not enough characters are available. ` +
-          `You need ${requiredCharacters}, but Gemini and the approved catalogue returned ` +
-          `${uniqueCharacters.length} unique characters. ` +
-          `Choose more genres or reduce the team size.`;
+        socket.emit(
+          'error:message',
+          `Not enough characters. You need ${requiredCharacters}, but only ${uniqueCharacters.length} unique characters were generated. Choose more genres or reduce the team size.`
+        );
 
-        socket.emit('error:message', message);
         emitRoom(room);
         return;
       }
 
-      // Select only the number required for all team slots.
-      // The remaining catalogue entries are not auction rounds.
-      const selectedCharacters =
-        shuffle(uniqueCharacters).slice(0, requiredCharacters);
+      // Exactly one auction character per team slot.
+      room.characters = shuffle(uniqueCharacters)
+        .slice(0, requiredCharacters);
 
-      room.characters = selectedCharacters;
-
-      if (room.status !== 'loading_characters' || !rooms.has(room.code)) {
+      if (
+        room.status !== 'loading_characters' ||
+        !rooms.has(room.code)
+      ) {
         return;
       }
 
@@ -1143,12 +1430,10 @@ io.on('connection', socket => {
       room.highestBidderId = null;
       room.lastBidderId = null;
       room.currentTurnIndex = 0;
-
-      // First auction starts with the host.
       room.openingPlayerId = room.hostId;
       room.nextOpeningPlayerId = room.hostId;
-
       room.turnDeadline = null;
+      room.turnToken = 0;
       room.noIncreaseTurns = 0;
       room.auctionLog = [];
       room.results = [];
@@ -1160,7 +1445,7 @@ io.on('connection', socket => {
       emitRoom(room);
 
     } catch (error) {
-      console.error('Room character generation failed:', error);
+      console.error('Character generation failed:', error);
 
       room.status = 'lobby';
 
@@ -1173,6 +1458,7 @@ io.on('connection', socket => {
     }
   });
 
+  // HOST DEPLOYS NEXT RANDOM CHARACTER
   socket.on('auction:next-character', () => {
     const room = [...rooms.values()].find(
       r => r.hostId === socket.id
@@ -1201,18 +1487,17 @@ io.on('connection', socket => {
     room.lastBidderId = null;
     room.noIncreaseTurns = 0;
 
-    // Previous auction winner opens this auction.
-    const active = activePlayers(room);
+    const players = activePlayers(room);
 
     room.openingPlayerId =
       room.nextOpeningPlayerId || room.hostId;
 
-    let openingIndex = active.findIndex(
+    let openingIndex = players.findIndex(
       player => player.id === room.openingPlayerId
     );
 
     if (openingIndex < 0) {
-      openingIndex = active.findIndex(
+      openingIndex = players.findIndex(
         player => player.id === room.hostId
       );
     }
@@ -1226,6 +1511,7 @@ io.on('connection', socket => {
     beginTurn(room);
   });
 
+  // INCREASE BID
   socket.on('bid:increase', ({ amount } = {}) => {
     const room = findRoomForSocket(socket.id);
 
@@ -1288,6 +1574,7 @@ io.on('connection', socket => {
     nextTurn(room);
   });
 
+  // SKIP TURN
   socket.on('bid:skip', () => {
     const room = findRoomForSocket(socket.id);
 
@@ -1309,7 +1596,8 @@ io.on('connection', socket => {
     passTurn(room, 'SKIP');
   });
 
-  socket.on('championship:start', () => {
+  // HOST STARTS TEAM COMPARISON
+  socket.on('championship:start', async () => {
     const room = [...rooms.values()].find(
       r => r.hostId === socket.id
     );
@@ -1330,13 +1618,14 @@ io.on('connection', socket => {
     if (incompletePlayer) {
       return socket.emit(
         'error:message',
-        `${incompletePlayer.name}'s team is not complete yet.`
+        `${incompletePlayer.name}'s team is not complete.`
       );
     }
 
-    startChampionship(room);
+    await startChampionship(room);
   });
 
+  // PLAYER DISCONNECT
   socket.on('disconnect', () => {
     for (const room of rooms.values()) {
       const player = room.players.find(
@@ -1357,6 +1646,7 @@ io.on('connection', socket => {
 
         if (previousCurrentId === socket.id) {
           stopTimer(room.code);
+
           room.noIncreaseTurns++;
 
           if (remainingPlayers.length) {
@@ -1388,6 +1678,10 @@ io.on('connection', socket => {
 
 });
 
+// --------------------------------------------------
+// SERVE FRONTEND
+// --------------------------------------------------
+
 app.use(express.static(path.join(__dirname, '..', 'dist')));
 
 app.get('*', (req, res, next) => {
@@ -1399,6 +1693,10 @@ app.get('*', (req, res, next) => {
     path.join(__dirname, '..', 'dist', 'index.html')
   );
 });
+
+// --------------------------------------------------
+// START SERVER
+// --------------------------------------------------
 
 server.listen(PORT, () => {
   console.log(`BATTLE AUCTION server listening on ${PORT}`);
