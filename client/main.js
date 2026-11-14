@@ -1,4 +1,3 @@
-
 import { io } from 'socket.io-client';
 import './style.css';
 
@@ -38,8 +37,6 @@ const escapeHtml = value =>
 const me = () => room?.players?.find(player => player.id === socket.id);
 const activePlayers = () => room?.players?.filter(player => player.connected) || [];
 
-// Prefer the stable player ID supplied by the server.
-// Keep the index fallback for compatibility with the older backend.
 const currentPlayer = () => {
   if (room?.currentTurnPlayerId) {
     return room.players?.find(
@@ -59,7 +56,6 @@ function acceptRoomUpdate(data) {
 
   const incomingVersion = Number(data.stateVersion);
 
-  // Ignore older updates from the same room.
   if (
     room &&
     data.code === room.code &&
@@ -96,9 +92,11 @@ function toast(message) {
 socket.on('room:created', data => {
   latestStateVersion = -1;
   room = data;
+
   if (Number(data?.stateVersion) > 0) {
     latestStateVersion = Number(data.stateVersion);
   }
+
   errorMessage = '';
   render();
 });
@@ -106,15 +104,16 @@ socket.on('room:created', data => {
 socket.on('room:joined', data => {
   latestStateVersion = -1;
   room = data;
+
   if (Number(data?.stateVersion) > 0) {
     latestStateVersion = Number(data.stateVersion);
   }
+
   errorMessage = '';
   render();
 });
 
 socket.on('room:update', acceptRoomUpdate);
-
 socket.on('error:message', toast);
 socket.on('connect', render);
 
@@ -123,10 +122,12 @@ function shell(content) {
     <div class="app-shell">
       <header class="topbar">
         <div class="brand-mark">BA</div>
+
         <div>
           <div class="brand">BATTLE <span>AUCTION</span></div>
           <div class="tagline">BUILD YOUR LEGENDARY SQUAD</div>
         </div>
+
         <div class="top-right">
           ${room ? `ROOM <b>${escapeHtml(room.code)}</b>` : 'MULTIPLAYER ARENA'}
         </div>
@@ -156,21 +157,27 @@ function renderHome() {
         <section class="panel">
           <h2>CREATE A ROOM</h2>
           <label>Your player name</label>
+
           <input id="createName" maxlength="24"
             placeholder="Enter your name"
             value="${escapeHtml(playerName)}">
+
           <button class="primary" id="createBtn">CREATE PRIVATE ROOM</button>
         </section>
 
         <section class="panel">
           <h2>JOIN A ROOM</h2>
+
           <label>Your player name</label>
+
           <input id="joinName" maxlength="24"
             placeholder="Enter your name"
             value="${escapeHtml(playerName)}">
 
           <label>Room code</label>
+
           <input id="roomCode" maxlength="6" placeholder="6-character code">
+
           <button class="secondary" id="joinBtn">JOIN ROOM</button>
         </section>
       </div>
@@ -185,10 +192,12 @@ function renderHome() {
 
   document.querySelector('#createBtn').onclick = () => {
     const name = document.querySelector('#createName').value.trim();
+
     if (!name) return toast('Enter your player name.');
 
     playerName = name;
     localStorage.setItem('ba_name', name);
+
     socket.emit('room:create', { name });
   };
 
@@ -200,6 +209,7 @@ function renderHome() {
 
     playerName = name;
     localStorage.setItem('ba_name', name);
+
     socket.emit('room:join', { name, code });
   };
 }
@@ -210,13 +220,16 @@ function renderLobby() {
   const playerRows = list(room.players).map(player => `
     <div class="player-row">
       <div class="avatar">${escapeHtml(player.name?.slice(0, 1).toUpperCase())}</div>
+
       <div>
         <b>${escapeHtml(player.name)}</b>
+
         <small>
           ${player.id === room.hostId ? 'HOST' : 'PLAYER'}
           · ${player.connected ? 'CONNECTED' : 'DISCONNECTED'}
         </small>
       </div>
+
       ${player.id === room.hostId ? '<span class="crown">♛</span>' : ''}
     </div>
   `).join('');
@@ -228,6 +241,7 @@ function renderLobby() {
           <div class="eyebrow">PRIVATE GAME ROOM</div>
           <h1>THE LOBBY</h1>
         </div>
+
         <div class="room-chip">
           ROOM CODE <b>${escapeHtml(room.code)}</b>
         </div>
@@ -271,15 +285,21 @@ function renderLobby() {
             </div>
 
             <label>Starting bid (₹)</label>
+
             <input id="startingBid" type="number" min="1"
               value="${Number(room.settings?.startingBid || 1)}">
 
             <div class="notice">
               <b>Automatic character count</b>
               <p>Required characters = number of players × team size.</p>
-              <p>Current requirement:
-                <b id="requiredCount">${room.players.length * Number(room.settings?.teamSize || 3)} characters</b>
+
+              <p>
+                Current requirement:
+                <b id="requiredCount">
+                  ${room.players.length * Number(room.settings?.teamSize || 3)} characters
+                </b>
               </p>
+
               <p>Each player starts with ₹100.</p>
             </div>
 
@@ -317,6 +337,7 @@ function renderLobby() {
   if (teamSizeInput) {
     teamSizeInput.oninput = () => {
       const size = Math.max(1, Number(teamSizeInput.value || 1));
+
       document.querySelector('#requiredCount').textContent =
         `${room.players.length * size} characters`;
     };
@@ -330,7 +351,9 @@ function renderLobby() {
       const turnSeconds = Number(document.querySelector('#turnSeconds').value);
       const startingBid = Number(document.querySelector('#startingBid').value);
 
-      if (!selectedUniverses.length) return toast('Select at least one genre.');
+      if (!selectedUniverses.length) {
+        return toast('Select at least one genre.');
+      }
 
       if (!Number.isInteger(teamSize) || teamSize < 1 || teamSize > 20) {
         return toast('Enter a valid team size.');
@@ -458,9 +481,11 @@ function startAuctionTimer() {
     }
 
     const timerElement = document.querySelector('#auctionTimer');
+
     if (!timerElement) return;
 
     const deadline = Number(room.turnDeadline || 0);
+
     const remaining = deadline
       ? Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
       : 0;
@@ -480,6 +505,7 @@ function renderAuction() {
   const character = room.currentCharacter;
 
   const deadline = Number(room.turnDeadline || 0);
+
   const remaining = deadline
     ? Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
     : 0;
@@ -499,8 +525,10 @@ function renderAuction() {
           <div class="eyebrow">
             LIVE AUCTION · CHARACTER ${characterNumber} OF ${totalCharacters}
           </div>
+
           <h1>THE BIDDING ARENA</h1>
         </div>
+
         <div class="room-chip">ROOM <b>${escapeHtml(room.code)}</b></div>
       </div>
 
@@ -510,6 +538,7 @@ function renderAuction() {
         <section class="panel bid-panel">
           <div class="eyebrow">CURRENT HIGHEST BID</div>
           <div class="bid-value">${money(room.currentBid)}</div>
+
           <div class="bidder">
             ${leader ? `LEADING: ${escapeHtml(leader.name)}` : 'NO BIDS YET'}
           </div>
@@ -519,6 +548,7 @@ function renderAuction() {
               <small>CURRENT TURN</small>
               <b>${escapeHtml(turn?.name || '—')}</b>
             </div>
+
             <div id="auctionTimer" class="timer ${remaining <= 3 ? 'urgent' : ''}">
               ${remaining}s
             </div>
@@ -532,6 +562,7 @@ function renderAuction() {
               </div>
 
               <label>INCREASE BY (₹)</label>
+
               <input id="bidAmount" type="number" min="1" step="1"
                 value="${selectedBidIncrement}">
 
@@ -548,8 +579,12 @@ function renderAuction() {
           ` : `
             <div class="waiting compact">
               <div class="pulse"></div>
+
               <b>WAITING FOR ${escapeHtml(turn?.name || 'PLAYER')}</b>
-              <p>${turn ? 'Your turn will come around again.' : 'Waiting for an active player.'}</p>
+
+              <p>
+                ${turn ? 'Your turn will come around again.' : 'Waiting for an active player.'}
+              </p>
             </div>
           `}
         </section>
@@ -567,6 +602,7 @@ function renderAuction() {
 
       <section class="panel roster">
         <h2>YOUR TEAM <small>${player?.team?.length || 0} CHARACTERS</small></h2>
+
         <div class="mini-roster">
           ${(player?.team || []).map(character => `
             <span>
@@ -590,6 +626,7 @@ function renderAuction() {
   document.querySelectorAll('[data-bid]').forEach(button => {
     button.onclick = () => {
       selectedBidIncrement = Number(button.dataset.bid);
+
       if (bidInput) bidInput.value = selectedBidIncrement;
     };
   });
@@ -610,7 +647,10 @@ function renderAuction() {
   }
 
   const skipButton = document.querySelector('#skipBtn');
-  if (skipButton) skipButton.onclick = () => socket.emit('bid:skip');
+
+  if (skipButton) {
+    skipButton.onclick = () => socket.emit('bid:skip');
+  }
 
   startAuctionTimer();
 }
@@ -624,10 +664,12 @@ function renderAuctionReady() {
   shell(`
     <main class="content">
       <div class="eyebrow">AUCTION PROGRESS</div>
+
       <h1>${characterNumber ? 'CHARACTER AUCTION RESOLVED' : 'READY TO BEGIN'}</h1>
 
       <section class="panel next-character-panel">
         <div class="eyebrow">AUCTION STATUS</div>
+
         <h2>
           ${characterNumber
             ? `CHARACTER ${characterNumber} OF ${totalCharacters} COMPLETED`
@@ -644,7 +686,9 @@ function renderAuctionReady() {
           </div>
         </div>
 
-        <p class="muted">${characterNumber} of ${totalCharacters} characters processed.</p>
+        <p class="muted">
+          ${characterNumber} of ${totalCharacters} characters processed.
+        </p>
 
         ${host ? `
           <button class="primary" id="nextCharacterBtn">
@@ -671,6 +715,7 @@ function renderAuctionReady() {
 
       <section class="panel roster">
         <h2>YOUR TEAM</h2>
+
         <div class="mini-roster">
           ${(me()?.team || []).map(character => `
             <span>
@@ -689,6 +734,7 @@ function renderAuctionReady() {
     nextButton.onclick = () => {
       nextButton.disabled = true;
       nextButton.textContent = 'SELECTING CHARACTER...';
+
       socket.emit('auction:next-character');
     };
   }
@@ -699,16 +745,22 @@ function renderLoadingCharacters() {
     <main class="content">
       <section class="panel loading-panel">
         <div class="loading-orb">✦</div>
+
         <div class="eyebrow">PREPARING THE BATTLE</div>
+
         <h1>GENERATING CHARACTERS</h1>
+
         <p class="intro">
           Your selected genres are being prepared.
           The auction will begin as soon as the character pool is ready.
         </p>
+
         <div class="loading-bar">
           <div class="loading-bar-fill"></div>
         </div>
+
         <h3 class="loading-message">PLEASE WAIT...</h3>
+
         <p class="muted">
           This may take a little time while the character catalogue is generated.
         </p>
@@ -738,6 +790,7 @@ function renderTeamReveal() {
           ${team.map(character => `
             <div class="team-character">
               <b>${escapeHtml(character.name)}</b>
+
               <span>
                 ${Number(character.rating || 0)}/100 ·
                 ${character.allocatedFree ? 'FREE' : `Paid ${money(character.paid)}`}
@@ -782,6 +835,7 @@ function renderReadyForFight() {
           ${team.map(character => `
             <div class="team-character">
               <b>${escapeHtml(character.name)}</b>
+
               <span>
                 ${Number(character.rating || 0)}/100 ·
                 ${character.allocatedFree ? 'FREE' : `Paid ${money(character.paid)}`}
@@ -820,10 +874,15 @@ function renderReadyForFight() {
     fightButton.onclick = () => {
       fightButton.disabled = true;
       fightButton.textContent = 'REVEALING TEAMS...';
+
       socket.emit('championship:start');
     };
   }
 }
+
+/* -------------------------------------------------------
+   CHAMPIONSHIP AND MATCH ANALYSIS
+------------------------------------------------------- */
 
 function matchPlayerName(match, side) {
   const playerId = side === 'a'
@@ -835,63 +894,20 @@ function matchPlayerName(match, side) {
   if (byId?.name) return byId.name;
 
   if (side === 'a') {
-    return match.playerA?.name ||
+    return match.teamAName ||
+      match.playerA?.name ||
       match.teamA?.name ||
       match.player1Name ||
       match.player1?.name ||
       'Team A';
   }
 
-  return match.playerB?.name ||
+  return match.teamBName ||
+    match.playerB?.name ||
     match.teamB?.name ||
     match.player2Name ||
     match.player2?.name ||
     'Team B';
-}
-
-function renderMatch(match, index) {
-  const playerA = matchPlayerName(match, 'a');
-  const playerB = matchPlayerName(match, 'b');
-
-  const winnerId = match.winnerId || match.winner?.id;
-  const winnerPlayer = room.players?.find(player => player.id === winnerId);
-  const winner = winnerPlayer?.name ||
-    match.winnerName ||
-    match.winner?.name ||
-    '';
-
-  const isDraw =
-    match.isDraw === true ||
-    match.draw === true ||
-    match.result === 'draw' ||
-    (!winner && match.winnerId === null);
-
-  const scoreA = match.scoreA ?? match.teamAScore ?? '';
-  const scoreB = match.scoreB ?? match.teamBScore ?? '';
-
-  return `
-    <div class="match-card">
-      <div class="match-number">MATCH ${index + 1}</div>
-
-      <div class="match-teams">
-        <b>${escapeHtml(playerA)}</b>
-        <span class="match-vs">VS</span>
-        <b>${escapeHtml(playerB)}</b>
-      </div>
-
-      ${scoreA !== '' || scoreB !== '' ? `
-        <div class="match-score">${escapeHtml(scoreA)} – ${escapeHtml(scoreB)}</div>
-      ` : ''}
-
-      <div class="match-result">
-        ${isDraw ? 'DRAW' : winner ? `WINNER: ${escapeHtml(winner)}` : escapeHtml(match.result || 'RESULT')}
-      </div>
-
-      ${match.explanation ? `
-        <p class="muted">${escapeHtml(match.explanation)}</p>
-      ` : ''}
-    </div>
-  `;
 }
 
 function findTeamEvaluation(player, championship) {
@@ -900,7 +916,11 @@ function findTeamEvaluation(player, championship) {
   if (player.analysis) return player.analysis;
 
   const evaluations = list(championship.teamEvaluations);
-  return evaluations.find(item => item.playerId === player.id) || {};
+
+  return evaluations.find(item =>
+    item.playerId === player.id ||
+    item.teamId === player.id
+  ) || {};
 }
 
 function renderBulletList(items, emptyText = 'No details provided.') {
@@ -917,9 +937,18 @@ function renderBulletList(items, emptyText = 'No details provided.') {
           return `<li>${escapeHtml(item)}</li>`;
         }
 
-        return `<li>${escapeHtml(
-          item.description || item.contribution || item.reason || item.name || ''
-        )}</li>`;
+        return `
+          <li>
+            ${escapeHtml(
+              item.description ||
+              item.contribution ||
+              item.reason ||
+              item.name ||
+              item.assessment ||
+              ''
+            )}
+          </li>
+        `;
       }).join('')}
     </ul>
   `;
@@ -933,6 +962,7 @@ function renderContributions(items) {
   return `
     <div class="analysis-section">
       <h4>KEY CHARACTER CONTRIBUTIONS</h4>
+
       <div class="contribution-list">
         ${values.map(item => `
           <div class="contribution-item">
@@ -961,10 +991,20 @@ function renderTeamAnalysis(player, championship) {
   const summary = evaluation.summary ||
     evaluation.overallSummary ||
     player.aiSummary ||
-    'A detailed evaluation was not returned for this team.';
+    '';
 
   const synergy = evaluation.synergy;
   const balance = evaluation.balance;
+
+  const hasEvaluation = Boolean(
+    summary ||
+    strengths.length ||
+    weaknesses.length ||
+    vulnerabilities.length ||
+    contributions.length ||
+    synergy ||
+    balance
+  );
 
   return `
     <section class="team-analysis-card">
@@ -973,73 +1013,299 @@ function renderTeamAnalysis(player, championship) {
           <div class="eyebrow">TEAM ANALYSIS</div>
           <h3>${escapeHtml(player.name)}</h3>
         </div>
+
         <div class="analysis-score">
           <strong>${Number(score)}/100</strong>
           <small>TEAM SCORE</small>
         </div>
       </div>
 
-      <p class="analysis-summary">${escapeHtml(summary)}</p>
+      ${hasEvaluation ? `
+        ${summary ? `
+          <p class="analysis-summary">${escapeHtml(summary)}</p>
+        ` : ''}
 
-      ${evaluation.rankingRationale ? `
-        <div class="analysis-section">
-          <h4>WHY THIS TEAM GOT THIS RANK</h4>
-          <p>${escapeHtml(evaluation.rankingRationale)}</p>
+        ${evaluation.rankingRationale ? `
+          <div class="analysis-section">
+            <h4>WHY THIS TEAM GOT THIS RANK</h4>
+            <p>${escapeHtml(evaluation.rankingRationale)}</p>
+          </div>
+        ` : ''}
+
+        <div class="analysis-columns">
+          <div class="analysis-section">
+            <h4>STRENGTHS</h4>
+            ${renderBulletList(strengths, 'No strengths were specified.')}
+          </div>
+
+          <div class="analysis-section">
+            <h4>WEAKNESSES</h4>
+            ${renderBulletList(weaknesses, 'No weaknesses were specified.')}
+          </div>
+
+          <div class="analysis-section">
+            <h4>VULNERABILITIES</h4>
+            ${renderBulletList(vulnerabilities, 'No specific vulnerabilities were listed.')}
+          </div>
         </div>
+
+        ${(synergy || balance) ? `
+          <div class="analysis-columns">
+            ${synergy ? `
+              <div class="analysis-section">
+                <h4>TEAM SYNERGY</h4>
+                <p>${escapeHtml(
+                  typeof synergy === 'string'
+                    ? synergy
+                    : synergy.explanation || synergy.description || JSON.stringify(synergy)
+                )}</p>
+              </div>
+            ` : ''}
+
+            ${balance ? `
+              <div class="analysis-section">
+                <h4>TEAM BALANCE</h4>
+                <p>${escapeHtml(
+                  typeof balance === 'string'
+                    ? balance
+                    : balance.explanation || balance.description || JSON.stringify(balance)
+                )}</p>
+              </div>
+            ` : ''}
+          </div>
+        ` : ''}
+
+        ${renderContributions(contributions)}
+      ` : `
+        <p class="muted">
+          Team-level evaluation is unavailable. See the individual match reports
+          below for the character-by-character analysis that was returned.
+        </p>
+      `}
+    </section>
+  `;
+}
+
+function renderOpponentMatchups(items) {
+  const matchups = list(items);
+
+  if (!matchups.length) {
+    return '<p class="muted">No individual opponent comparisons were returned.</p>';
+  }
+
+  return `
+    <div class="opponent-matchups">
+      ${matchups.map(item => `
+        <div class="opponent-matchup">
+          <b>VS ${escapeHtml(
+            item.opponentCharacterName ||
+            item.opponentName ||
+            item.characterName ||
+            'Opponent'
+          )}</b>
+
+          ${item.advantage ? `
+            <p><strong>Advantage:</strong> ${escapeHtml(item.advantage)}</p>
+          ` : ''}
+
+          ${item.disadvantage ? `
+            <p><strong>Disadvantage:</strong> ${escapeHtml(item.disadvantage)}</p>
+          ` : ''}
+
+          ${item.assessment ? `
+            <p>${escapeHtml(item.assessment)}</p>
+          ` : ''}
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderCharacterMatchAnalysis(character, index) {
+  const advantages = list(character.advantages);
+  const disadvantages = list(character.disadvantages);
+
+  const name = character.characterName ||
+    character.name ||
+    `Character ${index + 1}`;
+
+  const assessment = character.overallAssessment ||
+    character.assessment ||
+    character.summary ||
+    '';
+
+  const impact = character.impact ??
+    character.impactScore;
+
+  return `
+    <article class="character-match-analysis">
+      <div class="character-match-heading">
+        <h4>${escapeHtml(name)}</h4>
+
+        ${impact !== undefined && impact !== null ? `
+          <span class="impact-score">
+            IMPACT: ${escapeHtml(impact)}
+          </span>
+        ` : ''}
+      </div>
+
+      ${assessment ? `
+        <p class="character-assessment">${escapeHtml(assessment)}</p>
       ` : ''}
 
       <div class="analysis-columns">
         <div class="analysis-section">
-          <h4>STRENGTHS</h4>
-          ${renderBulletList(strengths, 'No strengths were specified.')}
+          <h5>ADVANTAGES</h5>
+          ${renderBulletList(advantages, 'No specific advantages listed.')}
         </div>
 
         <div class="analysis-section">
-          <h4>WEAKNESSES</h4>
-          ${renderBulletList(weaknesses, 'No weaknesses were specified.')}
-        </div>
-
-        <div class="analysis-section">
-          <h4>VULNERABILITIES</h4>
-          ${renderBulletList(vulnerabilities, 'No specific vulnerabilities were listed.')}
+          <h5>DISADVANTAGES</h5>
+          ${renderBulletList(disadvantages, 'No specific disadvantages listed.')}
         </div>
       </div>
 
-      ${(synergy || balance) ? `
-        <div class="analysis-columns">
-          ${synergy ? `
-            <div class="analysis-section">
-              <h4>TEAM SYNERGY</h4>
-              <p>${escapeHtml(
-                typeof synergy === 'string'
-                  ? synergy
-                  : synergy.explanation || synergy.description || JSON.stringify(synergy)
-              )}</p>
-            </div>
-          ` : ''}
+      ${list(character.opponentMatchups).length ? `
+        <div class="analysis-section">
+          <h5>INDIVIDUAL OPPONENT COMPARISONS</h5>
+          ${renderOpponentMatchups(character.opponentMatchups)}
+        </div>
+      ` : ''}
+    </article>
+  `;
+}
 
-          ${balance ? `
-            <div class="analysis-section">
-              <h4>TEAM BALANCE</h4>
-              <p>${escapeHtml(
-                typeof balance === 'string'
-                  ? balance
-                  : balance.explanation || balance.description || JSON.stringify(balance)
-              )}</p>
-            </div>
-          ` : ''}
+function renderTeamMatchAnalysis(teamName, characters, fallbackCharacters) {
+  const entries = list(characters).length
+    ? list(characters)
+    : list(fallbackCharacters);
+
+  return `
+    <section class="match-analysis-side">
+      <h3>${escapeHtml(teamName)}</h3>
+
+      ${entries.length ? `
+        <div class="character-match-list">
+          ${entries.map((character, index) =>
+            renderCharacterMatchAnalysis(character, index)
+          ).join('')}
+        </div>
+      ` : `
+        <p class="muted">
+          Character-by-character analysis was not returned for this team.
+        </p>
+      `}
+    </section>
+  `;
+}
+
+function renderMatch(match, index) {
+  const playerA = matchPlayerName(match, 'a');
+  const playerB = matchPlayerName(match, 'b');
+
+  const winnerId = match.winnerId || match.winner?.id;
+
+  const winnerPlayer = room.players?.find(
+    player => player.id === winnerId
+  );
+
+  const winner = winnerPlayer?.name ||
+    match.winnerName ||
+    match.winner?.name ||
+    '';
+
+  const isDraw =
+    match.isDraw === true ||
+    match.draw === true ||
+    match.result === 'draw' ||
+    (!winner && match.winnerId === null);
+
+  const scoreA = match.scoreA ?? match.teamAScore ?? '';
+  const scoreB = match.scoreB ?? match.teamBScore ?? '';
+
+  const teamAAnalysis = list(match.teamAAnalysis);
+  const teamBAnalysis = list(match.teamBAnalysis);
+
+  const aiAnalysisAvailable =
+    teamAAnalysis.length > 0 ||
+    teamBAnalysis.length > 0;
+
+  const fallback = match.analysisSource === 'fallback' ||
+    match.aiGenerated === false;
+
+  const analysisId = `match-analysis-${index}`;
+
+  return `
+    <article class="match-card">
+      <div class="match-number">MATCH ${index + 1}</div>
+
+      <div class="match-teams">
+        <b>${escapeHtml(playerA)}</b>
+        <span class="match-vs">VS</span>
+        <b>${escapeHtml(playerB)}</b>
+      </div>
+
+      ${scoreA !== '' || scoreB !== '' ? `
+        <div class="match-score">
+          ${escapeHtml(scoreA)} – ${escapeHtml(scoreB)}
         </div>
       ` : ''}
 
-      ${renderContributions(contributions)}
-    </section>
+      <div class="match-result">
+        ${isDraw
+          ? 'DRAW'
+          : winner
+            ? `WINNER: ${escapeHtml(winner)}`
+            : escapeHtml(match.result || 'RESULT')}
+      </div>
+
+      ${match.explanation ? `
+        <p class="muted">${escapeHtml(match.explanation)}</p>
+      ` : ''}
+
+      ${fallback ? `
+        <div class="analysis-source-note">
+          Fallback analysis · AI matchup evaluation was unavailable.
+        </div>
+      ` : aiAnalysisAvailable ? `
+        <div class="analysis-source-note">
+          AI matchup analysis
+        </div>
+      ` : `
+        <div class="analysis-source-note">
+          No detailed character analysis was returned for this match.
+        </div>
+      `}
+
+      <button class="secondary analysis-toggle"
+        type="button"
+        data-analysis-toggle="${analysisId}">
+        VIEW CHARACTER-BY-CHARACTER ANALYSIS
+      </button>
+
+      <div class="match-analysis-details" id="${analysisId}" hidden>
+        ${renderTeamMatchAnalysis(
+          playerA,
+          teamAAnalysis,
+          match.teamACharacters
+        )}
+
+        ${renderTeamMatchAnalysis(
+          playerB,
+          teamBAnalysis,
+          match.teamBCharacters
+        )}
+      </div>
+    </article>
   `;
 }
 
 function renderChampionship() {
   const championship = room.championship || {};
+
   const standings = list(championship.standings);
   const matches = list(championship.matches);
+
   const aiEvaluation = championship.aiEvaluation || {};
 
   const overallSummary = aiEvaluation.overallSummary ||
@@ -1050,6 +1316,8 @@ function renderChampionship() {
     championship.rankingExplanation ||
     '';
 
+  const evaluationStatus = aiEvaluation.status || 'unknown';
+
   shell(`
     <main class="content">
       <div class="eyebrow">CHAMPIONSHIP COMPLETE</div>
@@ -1057,8 +1325,18 @@ function renderChampionship() {
 
       <p class="intro">
         Every team has faced every other team. Here are the match results,
-        final standings and detailed team evaluations.
+        final standings and detailed character evaluations.
       </p>
+
+      ${evaluationStatus === 'fallback' || evaluationStatus === 'unavailable' ? `
+        <div class="notice">
+          <b>AI evaluation unavailable</b>
+          <p>
+            The championship results are based on fallback calculations.
+            Detailed AI-generated matchup analysis was not available.
+          </p>
+        </div>
+      ` : ''}
 
       ${overallSummary ? `
         <section class="panel championship-summary">
@@ -1093,10 +1371,13 @@ function renderChampionship() {
               </div>
             `).join('')}
           </div>
-        ` : '<p class="muted">The server did not return leaderboard data.</p>'}
+        ` : `
+          <p class="muted">The server did not return leaderboard data.</p>
+        `}
 
         <div class="notice">
           <b>Ranking rules</b>
+
           <p>
             ${escapeHtml(
               Array.isArray(championship.rankingRules)
@@ -1117,6 +1398,12 @@ function renderChampionship() {
 
       <section class="panel">
         <h2>ALL MATCH RESULTS</h2>
+
+        <p class="muted">
+          Each team plays every other team. Open a match to see how
+          individual characters compare against their opponents.
+        </p>
+
         <div class="matches-grid">
           ${matches.length
             ? matches.map((match, index) => renderMatch(match, index)).join('')
@@ -1126,6 +1413,7 @@ function renderChampionship() {
 
       <section class="panel">
         <h2>DETAILED TEAM EVALUATIONS</h2>
+
         <p class="muted">
           These evaluations explain what each team does well, where it is vulnerable
           and how its characters contribute to the overall team.
@@ -1140,9 +1428,11 @@ function renderChampionship() {
 
       <section class="panel">
         <h2>FINAL TEAM ROSTERS</h2>
+
         <div class="team-grid">
           ${room.players.map(player => {
             const evaluation = findTeamEvaluation(player, championship);
+
             const standing = standings.find(
               item => item.playerId === player.id
             );
@@ -1150,10 +1440,12 @@ function renderChampionship() {
             return `
               <section class="panel">
                 <h2>${escapeHtml(player.name)}</h2>
+
                 <div class="team-characters">
-                  ${player.team.map(character => `
+                  ${list(player.team).map(character => `
                     <div class="team-character">
                       <b>${escapeHtml(character.name)}</b>
+
                       <span>
                         ${Number(character.rating || 0)}/100 ·
                         ${character.allocatedFree ? 'FREE' : `Paid ${money(character.paid)}`}
@@ -1161,8 +1453,10 @@ function renderChampionship() {
                     </div>
                   `).join('')}
                 </div>
+
                 <div class="team-total">
                   TEAM STRENGTH
+
                   <b>${Number(
                     standing?.teamStrength ??
                     evaluation.score ??
@@ -1180,6 +1474,23 @@ function renderChampionship() {
     </main>
   `);
 
+  document.querySelectorAll('[data-analysis-toggle]').forEach(button => {
+    button.onclick = () => {
+      const id = button.dataset.analysisToggle;
+      const panel = document.getElementById(id);
+
+      if (!panel) return;
+
+      const opening = panel.hidden;
+
+      panel.hidden = !opening;
+
+      button.textContent = opening
+        ? 'HIDE CHARACTER-BY-CHARACTER ANALYSIS'
+        : 'VIEW CHARACTER-BY-CHARACTER ANALYSIS';
+    };
+  });
+
   document.querySelector('#homeBtn').onclick = () => {
     room = null;
     latestStateVersion = -1;
@@ -1196,6 +1507,7 @@ function renderIncomplete() {
 
       <section class="panel">
         <h2>INCOMPLETE TEAM WARNING</h2>
+
         <p class="intro">
           The available characters were not sufficient to fill every team slot.
         </p>
@@ -1210,8 +1522,9 @@ function renderIncomplete() {
             <section class="panel">
               <h2>${escapeHtml(player.name)}</h2>
               <p>${player.team.length}/${room.settings.teamSize} characters</p>
+
               <div class="team-characters">
-                ${player.team.map(character => `
+                ${list(player.team).map(character => `
                   <div class="team-character">
                     <b>${escapeHtml(character.name)}</b>
                     <span>${Number(character.rating || 0)}/100</span>
@@ -1231,9 +1544,11 @@ function renderPaused() {
     <main class="content">
       <div class="eyebrow">AUCTION PAUSED</div>
       <h1>WAITING FOR PLAYERS</h1>
+
       <section class="panel waiting">
         <div class="pulse"></div>
         <h3>THE AUCTION IS PAUSED</h3>
+
         <p>
           There are currently no connected players available to continue.
           Reconnect to the room to continue.
