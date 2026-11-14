@@ -14,27 +14,26 @@ app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
-const PORT = process.env.PORT || 3000;
 
+const PORT = process.env.PORT || 3000;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 const rooms = new Map();
 const turnTimers = new Map();
+const genreCache = new Map();
 
-const IMAGE_TITLES = {
-  'marvel-spider-man': 'Spider-Man',
-  'marvel-iron-man': 'Iron Man',
-  'marvel-thor': 'Thor (Marvel Comics)',
-  'dc-batman': 'Batman',
-  'dc-superman': 'Superman',
-  'dc-wonder-woman': 'Wonder Woman',
-  'naruto-naruto': 'Naruto Uzumaki',
-  'naruto-sasuke': 'Sasuke Uchiha',
-  'dragonball-goku': 'Goku',
-  'dragonball-vegeta': 'Vegeta',
-  'ramayana-hanuman': 'Hanuman',
-  'mahabharata-arjuna': 'Arjuna'
-};
+const GENRES = [
+  'Ramayana',
+  'Mahabharata',
+  'Football',
+  'Cricket',
+  'Marvel',
+  'DC',
+  'Harry Potter',
+  'Anime'
+];
 
+// Existing approved characters retained as additional catalogue entries.
 const SEED_CHARACTERS = [
   {
     id: 'marvel-spider-man',
@@ -45,7 +44,7 @@ const SEED_CHARACTERS = [
     abilities: ['Spider-sense', 'Agility', 'Web-slinging'],
     strengths: ['Mobility', 'Reflexes', 'Improvisation'],
     weaknesses: ['Human-level durability'],
-    description: 'Peter Parker is a brilliant young hero whose spider-like abilities combine extraordinary agility, danger awareness and web-based mobility. His scientific creativity and quick thinking make him effective in unpredictable situations.',
+    description: 'Peter Parker is a brilliant young hero whose spider-like abilities combine extraordinary agility, danger awareness and web-based mobility.',
     combatStyle: 'Fast, mobile and improvisational',
     sources: ['https://www.marvel.com/characters/spider-man-peter-parker']
   },
@@ -58,7 +57,7 @@ const SEED_CHARACTERS = [
     abilities: ['Powered armour', 'Repulsors', 'Flight'],
     strengths: ['Technology', 'Range', 'Adaptability'],
     weaknesses: ['Armour dependence'],
-    description: 'Tony Stark is an inventor who uses advanced powered armour, intelligent systems and a wide range of technological tools.',
+    description: 'Tony Stark is an inventor who uses advanced powered armour and technological tools.',
     combatStyle: 'Technology-driven ranged combat',
     sources: ['https://www.marvel.com/characters/iron-man-tony-stark']
   },
@@ -71,7 +70,7 @@ const SEED_CHARACTERS = [
     abilities: ['Asgardian physiology', 'Mjolnir', 'Lightning'],
     strengths: ['Durability', 'Strength', 'Energy projection'],
     weaknesses: ['Version-dependent limits'],
-    description: 'Thor is an Asgardian warrior with immense physical strength and control over powerful storm energy.',
+    description: 'Thor is an Asgardian warrior with immense strength and control over storm energy.',
     combatStyle: 'Powerful close combat and storm-based attacks',
     sources: ['https://www.marvel.com/characters/thor-thor-odinson']
   },
@@ -84,7 +83,7 @@ const SEED_CHARACTERS = [
     abilities: ['Detective skills', 'Martial arts', 'Technology'],
     strengths: ['Preparation', 'Strategy', 'Stealth'],
     weaknesses: ['Human physiology'],
-    description: 'Bruce Wayne is a highly trained detective and strategist who combines scientific equipment, investigative ability and martial arts.',
+    description: 'Bruce Wayne is a highly trained detective and strategist.',
     combatStyle: 'Strategic, technical and stealth-oriented',
     sources: ['https://www.dc.com/characters/batman']
   },
@@ -97,7 +96,7 @@ const SEED_CHARACTERS = [
     abilities: ['Flight', 'Super strength', 'Heat vision'],
     strengths: ['Speed', 'Durability', 'Power'],
     weaknesses: ['Continuity-dependent vulnerabilities'],
-    description: 'Clark Kent is a Kryptonian whose abilities include exceptional strength, speed, flight and energy projection.',
+    description: 'Clark Kent is a Kryptonian whose abilities include exceptional strength, speed and flight.',
     combatStyle: 'High-power physical and ranged combat',
     sources: ['https://www.dc.com/characters/superman']
   },
@@ -110,61 +109,9 @@ const SEED_CHARACTERS = [
     abilities: ['Amazonian abilities', 'Combat skill', 'Lasso'],
     strengths: ['Combat', 'Durability', 'Leadership'],
     weaknesses: ['Continuity-dependent limits'],
-    description: 'Diana is an Amazonian warrior known for her strength, discipline and extensive combat experience.',
+    description: 'Diana is an Amazonian warrior known for her strength and combat experience.',
     combatStyle: 'Disciplined close combat and tactical defence',
     sources: ['https://www.dc.com/characters/wonder-woman']
-  },
-  {
-    id: 'naruto-naruto',
-    name: 'Naruto Uzumaki',
-    universe: 'Naruto',
-    version: 'End-of-series',
-    rating: 95,
-    abilities: ['Shadow clones', 'Sage powers', 'Kurama chakra'],
-    strengths: ['Chakra reserves', 'Versatility', 'Resilience'],
-    weaknesses: ['Specific power-state limits'],
-    description: 'Naruto is a highly versatile ninja whose techniques, chakra reserves and ability to adapt allow him to approach challenges in many different ways.',
-    combatStyle: 'Versatile ninjutsu and high-energy combat',
-    sources: ['https://naruto-official.com/en']
-  },
-  {
-    id: 'naruto-sasuke',
-    name: 'Sasuke Uchiha',
-    universe: 'Naruto',
-    version: 'End-of-series',
-    rating: 94,
-    abilities: ['Sharingan', 'Rinnegan-era techniques', 'Lightning release'],
-    strengths: ['Perception', 'Ninjutsu', 'Tactics'],
-    weaknesses: ['Chakra constraints'],
-    description: 'Sasuke is an exceptionally skilled shinobi who combines advanced visual abilities, lightning techniques and tactical intelligence.',
-    combatStyle: 'Precision-based ninjutsu and tactical combat',
-    sources: ['https://naruto-official.com/en']
-  },
-  {
-    id: 'dragonball-goku',
-    name: 'Goku',
-    universe: 'Dragon Ball',
-    version: 'Dragon Ball Super continuity',
-    rating: 98,
-    abilities: ['Ki control', 'Ultra Instinct forms'],
-    strengths: ['Combat adaptation', 'Speed', 'Power'],
-    weaknesses: ['Energy and form constraints'],
-    description: 'Goku is a Saiyan martial artist who constantly develops his abilities through training and competition.',
-    combatStyle: 'Martial arts and ki-based combat',
-    sources: ['https://dragon-ball-official.com/']
-  },
-  {
-    id: 'dragonball-vegeta',
-    name: 'Vegeta',
-    universe: 'Dragon Ball',
-    version: 'Dragon Ball Super continuity',
-    rating: 97,
-    abilities: ['Ki control', 'Saiyan transformations'],
-    strengths: ['Combat skill', 'Power', 'Determination'],
-    weaknesses: ['Energy and form constraints'],
-    description: 'Vegeta is a powerful Saiyan warrior whose disciplined training, technical combat skill and determination drive his development.',
-    combatStyle: 'Aggressive martial arts and ki-based combat',
-    sources: ['https://dragon-ball-official.com/']
   },
   {
     id: 'ramayana-hanuman',
@@ -188,7 +135,7 @@ const SEED_CHARACTERS = [
     abilities: ['Archery', 'Divine astras', 'Warfare'],
     strengths: ['Precision', 'Discipline', 'Combat skill'],
     weaknesses: ['Weapon and context constraints'],
-    description: 'Arjuna is one of the central warriors of the Mahabharata, renowned for exceptional archery, discipline and knowledge of warfare.',
+    description: 'Arjuna is one of the central warriors of the Mahabharata, renowned for exceptional archery.',
     combatStyle: 'Precision archery and traditional warfare',
     sources: ['https://www.sacred-texts.com/hin/']
   }
@@ -209,33 +156,208 @@ function shuffle(list) {
   return array;
 }
 
-async function addCharacterImages(characters) {
-  return Promise.all(characters.map(async character => {
-    const title = IMAGE_TITLES[character.id];
+function slugify(value) {
+  return String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
 
-    if (!title) return character;
+function extractJSON(text) {
+  const cleaned = String(text || '')
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+
+    if (start >= 0 && end > start) {
+      return JSON.parse(cleaned.slice(start, end + 1));
+    }
+
+    throw new Error('Gemini did not return valid JSON.');
+  }
+}
+
+function cleanList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map(item => String(item).trim())
+      .filter(Boolean)
+      .slice(0, 12);
+  }
+
+  if (typeof value === 'string') {
+    return value.split(',')
+      .map(item => item.trim())
+      .filter(Boolean)
+      .slice(0, 12);
+  }
+
+  return [];
+}
+
+function normalizeCharacter(raw, genre) {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const name = String(raw.name || '').trim().slice(0, 80);
+
+  if (!name) return null;
+
+  const rating = Math.round(Number(raw.rating));
+
+  return {
+    id: `${slugify(genre)}-${slugify(name)}`,
+    name,
+    universe: genre,
+    version: String(raw.version || 'General version').slice(0, 100),
+    rating: Number.isFinite(rating)
+      ? Math.max(1, Math.min(100, rating))
+      : 70,
+    abilities: cleanList(raw.abilities),
+    strengths: cleanList(raw.strengths),
+    weaknesses: cleanList(raw.weaknesses),
+    description: String(raw.description || '').slice(0, 500),
+    combatStyle: String(raw.combatStyle || 'Versatile').slice(0, 150),
+    sources: [],
+    imageUrl: null
+  };
+}
+
+// Generate one batch at a time to reduce the risk of oversized responses.
+// A genre can contain fewer than 100 characters if Gemini cannot supply
+// 100 valid, distinct entries.
+async function generateGenreCharacters(genre) {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error('Gemini API key is missing. Add GEMINI_API_KEY in Render.');
+  }
+
+  const genAI = new GoogleGenerativeAI(
+    process.env.GEMINI_API_KEY
+  );
+
+  const model = genAI.getGenerativeModel({
+    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+    generationConfig: {
+      responseMimeType: 'application/json'
+    }
+  });
+
+  const generated = [];
+  const seen = new Set();
+
+  for (let batch = 0; batch < 4; batch++) {
+    const remaining = 100 - generated.length;
+
+    if (remaining <= 0) break;
+
+    const count = Math.min(25, remaining);
+
+    const prompt = `
+Create up to ${count} distinct, established entries for the genre "${genre}".
+
+The entries will be used in a friendly character/team auction game.
+
+Rules:
+- For Ramayana and Mahabharata, use established figures from the respective epic traditions.
+- For Football and Cricket, use real, established players from the sport.
+- For Marvel and DC, use established characters from the respective universes.
+- For Harry Potter, use established characters from the Harry Potter universe.
+- For Anime, use established characters from well-known anime series.
+- Do not invent characters.
+- Do not repeat the same person or character.
+- For sports, use a suitable playing career or era in the version field.
+- Ratings are subjective GAME ratings from 1 to 100, not official statistics.
+- Keep descriptions concise.
+- Return fewer entries if you cannot provide the requested number reliably.
+
+Return valid JSON only in this exact structure:
+{
+  "characters": [
+    {
+      "name": "Name",
+      "version": "Version, series, team or era",
+      "rating": 85,
+      "abilities": ["Ability 1", "Ability 2"],
+      "strengths": ["Strength 1", "Strength 2"],
+      "weaknesses": ["Weakness 1"],
+      "description": "Short description",
+      "combatStyle": "Short description of playing or combat style"
+    }
+  ]
+}
+`;
 
     try {
-      const url =
-        `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+      const result = await model.generateContent(prompt);
+      const parsed = extractJSON(result.response.text());
 
-      const response = await fetch(url, {
-        headers: { 'User-Agent': 'BattleAuction/2.0' },
-        signal: AbortSignal.timeout(5000)
-      });
+      const entries = Array.isArray(parsed.characters)
+        ? parsed.characters
+        : [];
 
-      if (!response.ok) return character;
+      for (const raw of entries) {
+        const character = normalizeCharacter(raw, genre);
 
-      const data = await response.json();
-      const imageUrl =
-        data.thumbnail?.source || data.originalimage?.source || null;
+        if (!character) continue;
 
-      return { ...character, imageUrl };
+        const key = character.name.toLowerCase();
+
+        if (seen.has(key)) continue;
+
+        seen.add(key);
+        generated.push(character);
+
+        if (generated.length >= 100) break;
+      }
     } catch (error) {
-      console.warn(`Image lookup failed for ${character.name}:`, error.message);
-      return character;
+      console.warn(
+        `Gemini batch ${batch + 1} failed for ${genre}:`,
+        error.message
+      );
+
+      // Continue with other batches instead of failing the whole genre.
     }
-  }));
+  }
+
+  // Add existing approved seed characters from this genre.
+  for (const seed of SEED_CHARACTERS.filter(
+    character => character.universe === genre
+  )) {
+    const key = seed.name.toLowerCase();
+
+    if (!seen.has(key) && generated.length < 100) {
+      seen.add(key);
+      generated.push(clone(seed));
+    }
+  }
+
+  return generated.slice(0, 100);
+}
+
+async function getGenreCharacters(genre) {
+  if (!GENRES.includes(genre)) {
+    throw new Error(`Unsupported genre: ${genre}`);
+  }
+
+  if (genreCache.has(genre)) {
+    return genreCache.get(genre);
+  }
+
+  const generationPromise = generateGenreCharacters(genre);
+
+  genreCache.set(genre, generationPromise);
+
+  try {
+    return await generationPromise;
+  } catch (error) {
+    genreCache.delete(genre);
+    throw error;
+  }
 }
 
 function roomCode() {
@@ -247,7 +369,9 @@ function roomCode() {
   ).join('');
 }
 
-function publicRoom(room) {
+// A player sees their own team.
+// All teams become visible when the championship begins.
+function publicRoom(room, viewerId) {
   return {
     code: room.code,
     hostId: room.hostId,
@@ -258,7 +382,10 @@ function publicRoom(room) {
       id: player.id,
       name: player.name,
       budget: player.budget,
-      team: player.team,
+      team:
+        room.status === 'championship' || player.id === viewerId
+          ? player.team
+          : [],
       connected: player.connected
     })),
 
@@ -282,7 +409,13 @@ function publicRoom(room) {
 }
 
 function emitRoom(room) {
-  io.to(room.code).emit('room:update', publicRoom(room));
+  // Send a different team view to each player.
+  for (const player of room.players) {
+    io.to(player.id).emit(
+      'room:update',
+      publicRoom(room, player.id)
+    );
+  }
 }
 
 function stopTimer(code) {
@@ -346,10 +479,21 @@ function beginTurn(room) {
   while (tries < players.length) {
     const player = getCurrentPlayer(room);
 
+    // Once the previous highest bidder's turn comes around again,
+    // the auction ends. This gives everyone else a chance to respond.
+    if (
+      room.highestBidderId &&
+      player?.id === room.highestBidderId
+    ) {
+      return resolveAuction(room);
+    }
+
     if (canBid(player, room)) break;
 
     room.noIncreaseTurns++;
-    room.currentTurnIndex = (room.currentTurnIndex + 1) % players.length;
+    room.currentTurnIndex =
+      (room.currentTurnIndex + 1) % players.length;
+
     tries++;
 
     if (room.noIncreaseTurns >= players.length) {
@@ -361,7 +505,8 @@ function beginTurn(room) {
     return resolveAuction(room);
   }
 
-  room.turnDeadline = Date.now() + room.settings.turnSeconds * 1000;
+  room.turnDeadline =
+    Date.now() + room.settings.turnSeconds * 1000;
 
   emitRoom(room);
 
@@ -390,7 +535,8 @@ function nextTurn(room) {
     return;
   }
 
-  room.currentTurnIndex = (room.currentTurnIndex + 1) % players.length;
+  room.currentTurnIndex =
+    (room.currentTurnIndex + 1) % players.length;
 
   beginTurn(room);
 }
@@ -425,7 +571,12 @@ function resolveAuction(room) {
     player.id === winnerId
   );
 
-  if (winner && winner.budget >= room.currentBid) {
+  if (
+    winner &&
+    winner.connected &&
+    winner.budget >= room.currentBid &&
+    winner.team.length < room.settings.teamSize
+  ) {
     winner.budget -= room.currentBid;
 
     winner.team.push({
@@ -459,8 +610,7 @@ function resolveAuction(room) {
     at: Date.now()
   });
 
-  // The winner of this auction starts the next auction.
-  // If nobody won, retain the previous opening player.
+  // The winner starts the next auction.
   if (winner && winner.id) {
     room.nextOpeningPlayerId = winner.id;
   } else {
@@ -488,14 +638,12 @@ function completeAuction(room) {
 
   const emptySlots = [];
 
-  // Find all remaining empty team slots.
   for (const player of room.players) {
     while (player.team.length < room.settings.teamSize) {
       emptySlots.push(player);
     }
   }
 
-  // Identify characters that have already been assigned.
   const assignedCharacterIds = new Set();
 
   for (const player of room.players) {
@@ -504,14 +652,12 @@ function completeAuction(room) {
     }
   }
 
-  // Find every unused character from the original pool.
   const availableCharacters = room.characters.filter(
     character => !assignedCharacterIds.has(character.id)
   );
 
   const freePool = shuffle(availableCharacters);
 
-  // Check that enough unused characters remain.
   if (freePool.length < emptySlots.length) {
     room.status = 'incomplete';
     room.turnDeadline = null;
@@ -524,7 +670,7 @@ function completeAuction(room) {
     return;
   }
 
-  // Give remaining characters to players for free.
+  // Fill all empty team slots with free characters.
   emptySlots.forEach((player, index) => {
     const character = freePool[index];
 
@@ -540,9 +686,23 @@ function completeAuction(room) {
   room.currentCharacter = null;
   room.turnDeadline = null;
   room.completionError = null;
-  room.status = 'ready_for_fight';
+
+  // First show each player only their own completed team.
+  room.status = 'team_reveal';
 
   emitRoom(room);
+
+  // After 10 seconds, the host can compare all teams.
+  setTimeout(() => {
+    const currentRoom = rooms.get(room.code);
+
+    if (!currentRoom || currentRoom.status !== 'team_reveal') {
+      return;
+    }
+
+    currentRoom.status = 'ready_for_fight';
+    emitRoom(currentRoom);
+  }, 10000);
 }
 
 function calculateTeamStrength(team) {
@@ -702,6 +862,8 @@ function isHost(room, socket) {
   return true;
 }
 
+// API ROUTES
+
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
@@ -711,55 +873,41 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.get('/api/universes', (_req, res) => {
-  res.json([
-    ...new Set(SEED_CHARACTERS.map(character => character.universe))
-  ]);
+  res.json(GENRES);
 });
 
 app.post('/api/research', async (req, res) => {
   if (!process.env.GEMINI_API_KEY) {
     return res.status(503).json({
-      error: 'Gemini is not configured. Add GEMINI_API_KEY to your server environment.'
+      error: 'Gemini is not configured. Add GEMINI_API_KEY to Render.'
     });
   }
 
-  const universe = String(req.body?.universe || '').trim();
+  const genre = String(req.body?.universe || '').trim();
 
-  if (!universe) {
+  if (!GENRES.includes(genre)) {
     return res.status(400).json({
-      error: 'Universe name is required.'
+      error: 'Choose one of the supported genres.'
     });
   }
 
   try {
-    const genAI = new GoogleGenerativeAI(
-      process.env.GEMINI_API_KEY
-    );
-
-    const model = genAI.getGenerativeModel({
-      model: process.env.GEMINI_MODEL || 'gemini-2.5-flash'
-    });
-
-    const prompt =
-      `Research established fictional characters from "${universe}". ` +
-      'Return JSON only with a characters array. Each character should include ' +
-      'name, version, abilities, strengths, weaknesses, rating and reliable source URLs. ' +
-      'Include only established characters. Return at most 20 characters. ' +
-      'This output requires human review before being used in the game.';
-
-    const result = await model.generateContent(prompt);
+    const characters = await getGenreCharacters(genre);
 
     res.json({
-      note: 'AI research requires source verification and host approval before use.',
-      output: result.response.text()
+      note: 'AI-generated entries should be reviewed for accuracy.',
+      count: characters.length,
+      characters
     });
   } catch (error) {
     res.status(502).json({
-      error: 'Gemini research request failed.',
+      error: 'Gemini character generation failed.',
       detail: error.message
     });
   }
 });
+
+// SOCKET EVENTS
 
 io.on('connection', socket => {
 
@@ -816,8 +964,7 @@ io.on('connection', socket => {
     rooms.set(code, room);
     socket.join(code);
 
-    socket.emit('room:created', publicRoom(room));
-
+    socket.emit('room:created', publicRoom(room, socket.id));
     emitRoom(room);
   });
 
@@ -844,11 +991,9 @@ io.on('connection', socket => {
     };
 
     room.players.push(player);
-
     socket.join(room.code);
 
-    socket.emit('room:joined', publicRoom(room));
-
+    socket.emit('room:joined', publicRoom(room, socket.id));
     emitRoom(room);
   });
 
@@ -869,6 +1014,13 @@ io.on('connection', socket => {
       return socket.emit(
         'error:message',
         'At least two players are required.'
+      );
+    }
+
+    if (!process.env.GEMINI_API_KEY) {
+      return socket.emit(
+        'error:message',
+        'Gemini API key is missing. Add GEMINI_API_KEY to Render.'
       );
     }
 
@@ -909,77 +1061,116 @@ io.on('connection', socket => {
       );
     }
 
-    const selectedUniverses =
+    const selectedGenres =
       Array.isArray(universes) && universes.length
-        ? [...new Set(universes.filter(value =>
-            SEED_CHARACTERS.some(
-              character => character.universe === value
-            )
-          ))]
-        : room.settings.universes;
+        ? [...new Set(universes.filter(value => GENRES.includes(value)))]
+        : room.settings.universes.filter(value => GENRES.includes(value));
 
-    if (!selectedUniverses.length) {
+    if (!selectedGenres.length) {
       return socket.emit(
         'error:message',
-        'Choose at least one available universe.'
+        'Choose at least one available genre.'
       );
     }
 
     const requiredCharacters =
       room.players.length * parsedTeamSize;
 
-    const pool = SEED_CHARACTERS.filter(character =>
-      selectedUniverses.includes(character.universe)
-    );
-
-    if (pool.length < requiredCharacters) {
-      return socket.emit(
-        'error:message',
-        `Not enough approved characters. You need ${requiredCharacters}, but only ${pool.length} are available in the selected universes. Choose more universes or a smaller team size.`
-      );
-    }
-
-    room.settings.teamSize = parsedTeamSize;
-    room.settings.turnSeconds = parsedTurnSeconds;
-    room.settings.startingBid = parsedStartingBid;
-    room.settings.universes = selectedUniverses;
-    room.settings.characterCount = requiredCharacters;
-
-    const selectedCharacters =
-      shuffle(pool).slice(0, requiredCharacters);
-
-    room.characters = await addCharacterImages(selectedCharacters);
-
-    if (room.status !== 'lobby' || !rooms.has(room.code)) {
-      return;
-    }
-
-    room.players.forEach(player => {
-      player.budget = room.settings.startingBudget;
-      player.team = [];
-    });
-
-    room.characterIndex = -1;
-    room.currentCharacter = null;
-    room.currentBid = parsedStartingBid;
-    room.highestBidderId = null;
-    room.lastBidderId = null;
-    room.currentTurnIndex = 0;
-
-    // First auction always starts with the host.
-    room.openingPlayerId = room.hostId;
-    room.nextOpeningPlayerId = room.hostId;
-
-    room.turnDeadline = null;
-    room.noIncreaseTurns = 0;
-    room.auctionLog = [];
-    room.results = [];
-    room.reserveCharacters = [];
-    room.championship = null;
+    // Prevent another start request while Gemini is generating.
+    room.status = 'loading_characters';
     room.completionError = null;
-    room.status = 'auction_ready';
-
     emitRoom(room);
+
+    try {
+      const genrePools = [];
+
+      // Generate/cache each selected genre.
+      for (const genre of selectedGenres) {
+        const characters = await getGenreCharacters(genre);
+        genrePools.push(...characters);
+      }
+
+      // Remove duplicates across selected genres.
+      const uniqueCharacters = [];
+      const seenIds = new Set();
+
+      for (const character of genrePools) {
+        if (seenIds.has(character.id)) continue;
+
+        seenIds.add(character.id);
+        uniqueCharacters.push(character);
+      }
+
+      if (uniqueCharacters.length < requiredCharacters) {
+        room.status = 'lobby';
+
+        const message =
+          `Not enough characters are available. ` +
+          `You need ${requiredCharacters}, but Gemini and the approved catalogue returned ` +
+          `${uniqueCharacters.length} unique characters. ` +
+          `Choose more genres or reduce the team size.`;
+
+        socket.emit('error:message', message);
+        emitRoom(room);
+        return;
+      }
+
+      // Select only the number required for all team slots.
+      // The remaining catalogue entries are not auction rounds.
+      const selectedCharacters =
+        shuffle(uniqueCharacters).slice(0, requiredCharacters);
+
+      room.characters = selectedCharacters;
+
+      if (room.status !== 'loading_characters' || !rooms.has(room.code)) {
+        return;
+      }
+
+      room.settings.teamSize = parsedTeamSize;
+      room.settings.turnSeconds = parsedTurnSeconds;
+      room.settings.startingBid = parsedStartingBid;
+      room.settings.universes = selectedGenres;
+      room.settings.characterCount = requiredCharacters;
+
+      room.players.forEach(player => {
+        player.budget = room.settings.startingBudget;
+        player.team = [];
+      });
+
+      room.characterIndex = -1;
+      room.currentCharacter = null;
+      room.currentBid = parsedStartingBid;
+      room.highestBidderId = null;
+      room.lastBidderId = null;
+      room.currentTurnIndex = 0;
+
+      // First auction starts with the host.
+      room.openingPlayerId = room.hostId;
+      room.nextOpeningPlayerId = room.hostId;
+
+      room.turnDeadline = null;
+      room.noIncreaseTurns = 0;
+      room.auctionLog = [];
+      room.results = [];
+      room.reserveCharacters = [];
+      room.championship = null;
+      room.completionError = null;
+      room.status = 'auction_ready';
+
+      emitRoom(room);
+
+    } catch (error) {
+      console.error('Room character generation failed:', error);
+
+      room.status = 'lobby';
+
+      socket.emit(
+        'error:message',
+        `Character generation failed: ${error.message}`
+      );
+
+      emitRoom(room);
+    }
   });
 
   socket.on('auction:next-character', () => {
@@ -1010,7 +1201,7 @@ io.on('connection', socket => {
     room.lastBidderId = null;
     room.noIncreaseTurns = 0;
 
-    // Start with the previous winner.
+    // Previous auction winner opens this auction.
     const active = activePlayers(room);
 
     room.openingPlayerId =
@@ -1020,17 +1211,13 @@ io.on('connection', socket => {
       player => player.id === room.openingPlayerId
     );
 
-    // If the previous winner is unavailable,
-    // try the host, then the first connected player.
     if (openingIndex < 0) {
       openingIndex = active.findIndex(
         player => player.id === room.hostId
       );
     }
 
-    if (openingIndex < 0) {
-      openingIndex = 0;
-    }
+    if (openingIndex < 0) openingIndex = 0;
 
     room.currentTurnIndex = openingIndex;
     room.turnDeadline = null;
@@ -1071,10 +1258,7 @@ io.on('connection', socket => {
     }
 
     if (player.team.length >= room.settings.teamSize) {
-      return socket.emit(
-        'error:message',
-        'Your team is full.'
-      );
+      return socket.emit('error:message', 'Your team is full.');
     }
 
     const newBid = room.currentBid + increment;
@@ -1173,7 +1357,6 @@ io.on('connection', socket => {
 
         if (previousCurrentId === socket.id) {
           stopTimer(room.code);
-
           room.noIncreaseTurns++;
 
           if (remainingPlayers.length) {
