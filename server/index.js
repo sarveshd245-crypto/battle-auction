@@ -1,4 +1,3 @@
-
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
@@ -256,9 +255,64 @@ function getGeminiModel() {
   return genAI.getGenerativeModel({
     model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
     generationConfig: {
-      responseMimeType: 'application/json'
+      responseMimeType: 'application/json',
+      maxOutputTokens: 8192,
+      temperature: 0.4
     }
   });
+}
+
+// Gemini JSON request with retry and better error reporting.
+async function generateGeminiJSON(model, prompt, label, attempts = 2) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const requestPrompt = attempt === 1
+        ? prompt
+        : `${prompt}
+
+IMPORTANT RETRY:
+Your previous response was invalid or incomplete.
+Return valid JSON only.
+Include every required field.
+Do not omit any requested analysis.`;
+
+      const result = await model.generateContent(requestPrompt);
+      const response = result.response;
+      const responseText = response.text();
+
+      if (!responseText || !responseText.trim()) {
+        const reason = response.candidates?.[0]?.finishReason || 'Unknown';
+
+        throw new Error(
+          `Gemini returned an empty response. Finish reason: ${reason}`
+        );
+      }
+
+      const parsed = extractJSON(responseText);
+
+      console.log(
+        `[GEMINI SUCCESS] ${label}, attempt ${attempt}`
+      );
+
+      return parsed;
+
+    } catch (error) {
+      lastError = error;
+
+      console.error(
+        `[GEMINI FAILURE] ${label}, attempt ${attempt}:`,
+        error.message
+      );
+
+      if (attempt < attempts) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+  }
+
+  throw lastError || new Error(`Gemini failed: ${label}`);
 }
 
 // --------------------------------------------------
@@ -925,7 +979,6 @@ function completeAuction(room) {
 
   stopTimer(room.code);
 
-  // Find all empty team slots.
   const emptySlots = [];
 
   for (const player of room.players) {
@@ -934,7 +987,6 @@ function completeAuction(room) {
     }
   }
 
-  // All teams are already full.
   if (emptySlots.length === 0) {
     room.reserveCharacters = [];
     room.currentCharacter = null;
@@ -959,7 +1011,6 @@ function completeAuction(room) {
     return;
   }
 
-  // Find characters already assigned to teams.
   const assignedIds = new Set();
 
   for (const player of room.players) {
@@ -968,7 +1019,6 @@ function completeAuction(room) {
     }
   }
 
-  // Combine all possible unused characters.
   const combinedPool = [
     ...(room.characters || []),
     ...(room.reserveCharacters || [])
@@ -993,7 +1043,6 @@ function completeAuction(room) {
     `${freePool.length} available characters.`
   );
 
-  // Make sure there are enough characters for every empty slot.
   if (freePool.length < emptySlots.length) {
     room.status = 'incomplete';
     room.currentCharacter = null;
@@ -1011,7 +1060,6 @@ function completeAuction(room) {
 
   const allocations = [];
 
-  // Give one unique free character to each empty slot.
   for (let i = 0; i < emptySlots.length; i++) {
     const player = emptySlots[i];
     const character = clone(freePool[i]);
@@ -1050,10 +1098,8 @@ function completeAuction(room) {
     });
   }
 
-  // Preserve any unused characters in the reserve pool.
   room.reserveCharacters = freePool.slice(emptySlots.length);
 
-  // Clear auction state.
   room.currentCharacter = null;
   room.currentTurnPlayerId = null;
   room.turnDeadline = null;
@@ -1064,7 +1110,6 @@ function completeAuction(room) {
   room.passedPlayerIds = new Set();
   room.completionError = null;
 
-  // Verify that every player has a complete team.
   const incompletePlayer = room.players.find(
     player => player.team.length !== room.settings.teamSize
   );
@@ -1084,11 +1129,9 @@ function completeAuction(room) {
     allocations
   );
 
-  // Reveal teams privately to each player.
   room.status = 'team_reveal';
   emitRoom(room);
 
-  // Enable the Fight button after the reveal period.
   setTimeout(() => {
     const currentRoom = rooms.get(room.code);
 
@@ -1222,16 +1265,23 @@ function calculateStandings(room, matches, evaluations = []) {
 }
 
 // --------------------------------------------------
-// MATCHUP NORMALIZATION
+// CHARACTER ANALYSIS NORMALIZATION
 // --------------------------------------------------
 
-function normalizeCharacterAnalysis(raw, team) {
+function normalizeCharacterAnalysis(raw, team, opposingTeam) {
   if (!Array.isArray(raw)) {
     throw new Error('Gemini omitted character matchup analysis.');
   }
 
   const teamCharacters = new Map(
     team.map(character => [
+      character.name.toLowerCase(),
+      character
+    ])
+  );
+
+  const opposingCharacters = new Map(
+    opposingTeam.map(character => [
       character.name.toLowerCase(),
       character
     ])
@@ -1266,16 +1316,44 @@ function normalizeCharacterAnalysis(raw, team) {
       );
     }
 
+    const opponentMatchups = Array.isArray(item.opponentMatchups)
+      ? item.opponentMatchups.slice(0, 3).map(opponent => {
+          const opponentName = safeText(opponent.opponentName);
+          const opponentKey = opponentName.toLowerCase();
+
+          if (!opposingCharacters.has(opponentKey)) {
+            throw new Error(
+              `Unknown opponent "${opponentName}" in analysis of ${name}.`
+            );
+          }
+
+          return {
+            opponentName,
+            advantage: safeText(
+              opponent.advantage,
+              'No specific advantage supplied.'
+            ),
+            disadvantage: safeText(
+              opponent.disadvantage,
+              'No specific disadvantage supplied.'
+            ),
+            impact: safeText(
+              opponent.impact,
+              'Impact not specified.'
+            )
+          };
+        })
+      : [];
+
+    if (!opponentMatchups.length) {
+      throw new Error(
+        `Gemini omitted opponent-specific analysis for ${name}.`
+      );
+    }
+
     return {
       characterName: name,
-      opponentMatchups: Array.isArray(item.opponentMatchups)
-        ? item.opponentMatchups.slice(0, 20).map(opponent => ({
-            opponentName: safeText(opponent.opponentName, 'Opponent'),
-            advantage: safeText(opponent.advantage, 'No specific advantage supplied.'),
-            disadvantage: safeText(opponent.disadvantage, 'No specific disadvantage supplied.'),
-            impact: safeText(opponent.impact, 'Impact not specified.')
-          }))
-        : [],
+      opponentMatchups,
       advantages,
       disadvantages,
       impact: safeText(item.impact, 'Contribution not specified.'),
@@ -1283,6 +1361,10 @@ function normalizeCharacterAnalysis(raw, team) {
     };
   });
 }
+
+// --------------------------------------------------
+// FALLBACK CHAMPIONSHIP
+// --------------------------------------------------
 
 function createFallbackChampionship(room, errorMessage) {
   const matches = [];
@@ -1353,249 +1435,81 @@ function createFallbackChampionship(room, errorMessage) {
 }
 
 // --------------------------------------------------
-// GEMINI CHAMPIONSHIP EVALUATION
+// GEMINI TEAM EVALUATION
 // --------------------------------------------------
 
-async function evaluateChampionshipWithGemini(room) {
-  const model = getGeminiModel();
-
-  const teams = room.players.map(player => ({
-    playerId: player.id,
-    playerName: player.name,
-    characters: player.team.map(character => ({
-      name: character.name,
-      genre: character.universe,
-      version: character.version,
-      rating: character.rating,
-      abilities: character.abilities,
-      strengths: character.strengths,
-      weaknesses: character.weaknesses,
-      description: character.description,
-      style: character.combatStyle
-    }))
-  }));
-
-  const expectedPairs = [];
-
-  for (let i = 0; i < teams.length; i++) {
-    for (let j = i + 1; j < teams.length; j++) {
-      expectedPairs.push({
-        teamAId: teams[i].playerId,
-        teamBId: teams[j].playerId
-      });
-    }
-  }
-
+async function evaluateTeamsWithGemini(model, teams) {
   const prompt = `
-You are the neutral and fair judge of a fictional and sporting team-building championship.
+You are a neutral evaluator for a fictional and sporting team championship.
 
-Your job is to analyse every team and every possible head-to-head matchup.
+Evaluate every team independently.
 
-IMPORTANT RULES:
+IMPORTANT:
+- Use only the supplied character information.
+- Do not invent abilities or achievements.
+- Do not simply average character ratings.
+- Consider strengths, weaknesses, role diversity, balance and synergy.
+- Consider how characters complement each other.
+- For Football and Cricket, evaluate sporting skills and team roles.
+- For fictional universes, evaluate fictional abilities in a non-graphic way.
+- Be fair to every team.
+- Explain your reasoning clearly.
 
-1. Use ONLY the character information supplied.
-2. Never invent powers, abilities, achievements, weaknesses or equipment.
-3. Do not automatically favour famous or highly rated characters.
-4. Ratings are supporting information, not the deciding factor.
-5. Evaluate how abilities and weaknesses interact.
-6. Explain uncertainty when characters belong to different fictional universes.
-7. Keep all explanations non-graphic and focused on fictional abilities, tactics and strategy.
-8. For Football and Cricket, evaluate sporting roles, skills, strengths, weaknesses and team balance instead of fictional combat.
+For every team return:
+- score from 1 to 100
+- summary
+- strengths
+- weaknesses
+- synergy
+- balance
+- vulnerabilities
+- key contributions for every character
+- ranking rationale
 
-TEAM EVALUATION:
-
-For every player, provide:
-- Score from 1 to 100.
-- Overall summary.
-- Strengths.
-- Weaknesses.
-- Synergy.
-- Balance.
-- Vulnerabilities.
-- Key contributions of every character.
-- Ranking rationale.
-
-HEAD-TO-HEAD EVALUATION:
-
-Every unordered pair of teams must be evaluated exactly once.
-
-For EACH matchup:
-
-A. Evaluate team A against team B.
-B. Evaluate team B against team A.
-C. Give each team a matchup score from 1 to 100.
-D. Choose the winner based on the actual matchup analysis.
-E. Explain why the winner has an advantage or why it is a draw.
-
-CHARACTER-BY-CHARACTER ANALYSIS:
-
-For EVERY character in team A:
-- Identify the specific opposing characters they match up well against.
-- Identify opposing characters who create disadvantages for them.
-- Explain their advantages.
-- Explain their disadvantages.
-- Explain their contribution to the overall matchup.
-- Identify their tactical role.
-
-Repeat this process for EVERY character in team B.
-
-Do not provide generic statements such as "strong character" or "good abilities".
-Use the actual supplied character names and abilities.
-
-Each character must have:
-- At least one advantage.
-- At least one disadvantage.
-- An explanation of impact.
-- A tactical role.
-- Opponent-specific matchup details.
-
-Do not assume that a character defeats every opponent.
-A character can have an advantage against one opponent and a disadvantage against another.
-
-MATCHUP SCORING:
-
-- Scores must reflect the matchup rather than copied team ratings.
-- A team with better overall ratings can lose a particular matchup if its abilities and composition are poorly suited to the opponent.
-- Consider coverage, role diversity, weaknesses, counterplay, coordination and synergy.
-- Do not award a winner solely because of a higher average character rating.
-- A close matchup can be a draw.
-- winnerId must match the team with the higher matchup score, or null for a draw.
-
-RETURN JSON ONLY.
-
-Use EXACTLY this structure:
+Return JSON only:
 
 {
-  "overallSummary": "Championship overview",
-  "rankingExplanation": "How the standings were determined",
   "teams": [
     {
       "playerId": "EXACT_PLAYER_ID",
       "score": 90,
-      "summary": "Team evaluation",
+      "summary": "Detailed team evaluation",
       "strengths": ["Strength"],
       "weaknesses": ["Weakness"],
-      "synergy": "Team synergy",
-      "balance": "Team balance",
+      "synergy": "How team members complement each other",
+      "balance": "Team balance explanation",
       "vulnerabilities": ["Vulnerability"],
       "keyContributions": [
         {
           "characterName": "Exact character name",
-          "contribution": "Contribution"
+          "contribution": "Specific contribution"
         }
       ],
-      "rankingRationale": "Ranking rationale"
-    }
-  ],
-  "matchups": [
-    {
-      "teamAId": "EXACT_PLAYER_ID",
-      "teamBId": "EXACT_PLAYER_ID",
-      "scoreA": 85,
-      "scoreB": 80,
-      "winnerId": "EXACT_PLAYER_ID",
-      "explanation": "Detailed matchup explanation",
-      "teamAAnalysis": [
-        {
-          "characterName": "Exact character name",
-          "opponentMatchups": [
-            {
-              "opponentName": "Exact opposing character name",
-              "advantage": "Specific advantage or disadvantage",
-              "disadvantage": "Specific limitation",
-              "impact": "How this affects the matchup"
-            }
-          ],
-          "advantages": ["Specific advantage"],
-          "disadvantages": ["Specific disadvantage"],
-          "impact": "Overall character contribution",
-          "tacticalRole": "Role in this matchup"
-        }
-      ],
-      "teamBAnalysis": [
-        {
-          "characterName": "Exact character name",
-          "opponentMatchups": [
-            {
-              "opponentName": "Exact opposing character name",
-              "advantage": "Specific advantage or disadvantage",
-              "disadvantage": "Specific limitation",
-              "impact": "How this affects the matchup"
-            }
-          ],
-          "advantages": ["Specific advantage"],
-          "disadvantages": ["Specific disadvantage"],
-          "impact": "Overall character contribution",
-          "tacticalRole": "Role in this matchup"
-        }
-      ]
+      "rankingRationale": "Detailed explanation"
     }
   ]
 }
 
-VALIDATION REQUIREMENTS:
-
-- Every player must appear exactly once in teams.
-- Every unordered pair of players must appear exactly once in matchups.
-- Use the exact player IDs supplied.
-- Every character in every team must appear exactly once in that team's matchup analysis for each matchup.
-- Use exact character names.
-- Every character must have advantages and disadvantages.
-- Do not omit character matchup details.
-- winnerId must be teamAId, teamBId, or null.
-- Do not include Markdown or text outside JSON.
+Every player must appear exactly once.
+Use exact player IDs and character names.
+Do not omit any character.
 
 TEAMS:
 ${JSON.stringify(teams)}
-
-REQUIRED MATCHUP PAIRS:
-${JSON.stringify(expectedPairs)}
 `;
 
-  let parsed = null;
-  let lastError = null;
+  const parsed = await generateGeminiJSON(
+    model,
+    prompt,
+    'Team evaluation',
+    2
+  );
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const result = await model.generateContent(
-        attempt === 1
-          ? prompt
-          : `${prompt}
-
-IMPORTANT: Your previous response was incomplete or invalid.
-Return the complete JSON structure. Do not omit any player,
-matchup or character analysis.`
-      );
-
-      parsed = extractJSON(result.response.text());
-      break;
-
-    } catch (error) {
-      lastError = error;
-
-      console.warn(
-        `Championship Gemini attempt ${attempt} failed:`,
-        error.message
-      );
-    }
+  if (!Array.isArray(parsed.teams)) {
+    throw new Error('Gemini did not return the team evaluation array.');
   }
 
-  if (!parsed) {
-    throw lastError || new Error('Gemini did not return an evaluation.');
-  }
-
-  if (
-    !Array.isArray(parsed.teams) ||
-    !Array.isArray(parsed.matchups)
-  ) {
-    throw new Error(
-      'Gemini returned an incomplete championship evaluation.'
-    );
-  }
-
-  const playerIds = room.players.map(player => player.id);
-  const validIds = new Set(playerIds);
-
+  const validIds = new Set(teams.map(team => team.playerId));
   const evaluationMap = new Map();
 
   for (const entry of parsed.teams) {
@@ -1607,16 +1521,18 @@ matchup or character analysis.`
       throw new Error('Gemini returned a duplicate team evaluation.');
     }
 
+    const team = teams.find(
+      item => item.playerId === entry.playerId
+    );
+
     const score = Number(entry.score);
 
     if (!Number.isFinite(score)) {
       throw new Error('Gemini returned an invalid team score.');
     }
 
-    const player = findPlayer(room, entry.playerId);
-
     const contributions = Array.isArray(entry.keyContributions)
-      ? entry.keyContributions.slice(0, 20).map(item => ({
+      ? entry.keyContributions.map(item => ({
           characterName: safeText(item.characterName, 'Team member'),
           contribution: safeText(
             item.contribution,
@@ -1639,140 +1555,331 @@ matchup or character analysis.`
         entry.rankingRationale,
         'No ranking rationale supplied.'
       ),
-      team: player.team
+      team: team.characters
     });
   }
 
-  if (evaluationMap.size !== room.players.length) {
+  if (evaluationMap.size !== teams.length) {
     throw new Error(
       'Gemini did not evaluate every player exactly once.'
     );
   }
 
-  const expectedPairSet = new Set(
-    expectedPairs.map(pair =>
-      [pair.teamAId, pair.teamBId].sort().join('|')
+  return teams.map(team => evaluationMap.get(team.playerId));
+}
+
+// --------------------------------------------------
+// GEMINI SINGLE MATCHUP EVALUATION
+// --------------------------------------------------
+
+async function evaluateSingleMatchupWithGemini(
+  model,
+  teamA,
+  teamB
+) {
+  const prompt = `
+You are a neutral judge evaluating ONE head-to-head team matchup.
+
+TEAM A:
+${JSON.stringify(teamA)}
+
+TEAM B:
+${JSON.stringify(teamB)}
+
+Your job is to compare these two teams carefully.
+
+IMPORTANT RULES:
+
+1. Use only the supplied information.
+2. Do not invent powers, skills, equipment, records or achievements.
+3. Character ratings are supporting information only.
+4. Do not decide the winner simply by comparing average ratings.
+5. Consider how abilities, strengths and weaknesses interact.
+6. Consider team balance, role diversity, coordination and synergy.
+7. Explain why one team has an advantage or why the matchup is a draw.
+8. For Football and Cricket, evaluate sporting roles and skills.
+9. For fictional characters, keep the evaluation non-graphic.
+10. Treat different fictional universes fairly.
+11. Do not automatically favour famous characters.
+
+TEAM SCORES:
+
+Give each team a matchup score from 1 to 100.
+
+The scores must reflect THIS specific matchup.
+They should not simply repeat the overall team scores or character ratings.
+
+CHARACTER ANALYSIS:
+
+Analyse EVERY character in Team A.
+Analyse EVERY character in Team B.
+
+For each character provide:
+
+- Exact character name.
+- One to three opponent-specific comparisons.
+- At least one advantage.
+- At least one disadvantage.
+- Explanation of their contribution.
+- Their tactical or sporting role.
+
+Opponent-specific comparisons:
+
+Use exact names from the opposing team.
+Choose the most relevant opposing characters.
+Explain how the character's abilities or skills interact with each opponent.
+
+Do not use generic statements such as "very powerful" or "good character".
+
+For every character, provide specific reasoning based on the supplied abilities, strengths and weaknesses.
+
+WINNER:
+
+- If scoreA is greater than scoreB, Team A wins.
+- If scoreB is greater than scoreA, Team B wins.
+- If the scores are equal, it is a draw.
+
+Return JSON only, with this exact structure:
+
+{
+  "teamAId": "${teamA.playerId}",
+  "teamBId": "${teamB.playerId}",
+  "scoreA": 85,
+  "scoreB": 80,
+  "explanation": "Detailed comparison explaining the result",
+  "teamAAnalysis": [
+    {
+      "characterName": "Exact Team A character name",
+      "opponentMatchups": [
+        {
+          "opponentName": "Exact Team B character name",
+          "advantage": "Specific advantage",
+          "disadvantage": "Specific limitation",
+          "impact": "How this interaction affects the matchup"
+        }
+      ],
+      "advantages": ["Specific advantage"],
+      "disadvantages": ["Specific disadvantage"],
+      "impact": "Contribution to the team",
+      "tacticalRole": "Specific role"
+    }
+  ],
+  "teamBAnalysis": [
+    {
+      "characterName": "Exact Team B character name",
+      "opponentMatchups": [
+        {
+          "opponentName": "Exact Team A character name",
+          "advantage": "Specific advantage",
+          "disadvantage": "Specific limitation",
+          "impact": "How this interaction affects the matchup"
+        }
+      ],
+      "advantages": ["Specific advantage"],
+      "disadvantages": ["Specific disadvantage"],
+      "impact": "Contribution to the team",
+      "tacticalRole": "Specific role"
+    }
+  ]
+}
+
+Do not omit any character.
+Every character must have at least one opponent matchup.
+Use exact names and IDs.
+Return JSON only.
+`;
+
+  const parsed = await generateGeminiJSON(
+    model,
+    prompt,
+    `Matchup ${teamA.playerName} vs ${teamB.playerName}`,
+    2
+  );
+
+  if (
+    parsed.teamAId !== teamA.playerId ||
+    parsed.teamBId !== teamB.playerId
+  ) {
+    throw new Error('Gemini returned incorrect player IDs.');
+  }
+
+  const scoreA = Number(parsed.scoreA);
+  const scoreB = Number(parsed.scoreB);
+
+  if (
+    !Number.isFinite(scoreA) ||
+    !Number.isFinite(scoreB)
+  ) {
+    throw new Error('Gemini returned invalid matchup scores.');
+  }
+
+  const cleanScoreA = Math.max(
+    1,
+    Math.min(100, Math.round(scoreA))
+  );
+
+  const cleanScoreB = Math.max(
+    1,
+    Math.min(100, Math.round(scoreB))
+  );
+
+  const teamAAnalysis = normalizeCharacterAnalysis(
+    parsed.teamAAnalysis,
+    teamA.characters,
+    teamB.characters
+  );
+
+  const teamBAnalysis = normalizeCharacterAnalysis(
+    parsed.teamBAnalysis,
+    teamB.characters,
+    teamA.characters
+  );
+
+  let winnerId = null;
+  let result = 'DRAW';
+
+  if (cleanScoreA > cleanScoreB) {
+    winnerId = teamA.playerId;
+    result = 'TEAM_A_WINS';
+  } else if (cleanScoreB > cleanScoreA) {
+    winnerId = teamB.playerId;
+    result = 'TEAM_B_WINS';
+  }
+
+  return {
+    teamAId: teamA.playerId,
+    teamAName: teamA.playerName,
+    teamBId: teamB.playerId,
+    teamBName: teamB.playerName,
+    scoreA: cleanScoreA,
+    scoreB: cleanScoreB,
+    winnerId,
+    result,
+    explanation: safeText(
+      parsed.explanation,
+      `${teamA.playerName} scored ${cleanScoreA}/100 and ${teamB.playerName} scored ${cleanScoreB}/100.`
+    ),
+    teamAAnalysis,
+    teamBAnalysis,
+    analysisStatus: 'complete'
+  };
+}
+
+// --------------------------------------------------
+// COMPLETE GEMINI CHAMPIONSHIP EVALUATION
+// --------------------------------------------------
+
+async function evaluateChampionshipWithGemini(room) {
+  const model = getGeminiModel();
+
+  const teams = room.players.map(player => ({
+    playerId: player.id,
+    playerName: player.name,
+    characters: player.team.map(character => ({
+      name: character.name,
+      genre: character.universe,
+      version: character.version,
+      rating: character.rating,
+      abilities: character.abilities,
+      strengths: character.strengths,
+      weaknesses: character.weaknesses,
+      description: character.description,
+      style: character.combatStyle
+    }))
+  }));
+
+  console.log(
+    `[CHAMPIONSHIP] Starting Gemini evaluation for room ${room.code}`
+  );
+
+  // STEP 1: Evaluate each team.
+  console.log(
+    `[CHAMPIONSHIP] Evaluating ${teams.length} teams.`
+  );
+
+  const evaluations = await evaluateTeamsWithGemini(
+    model,
+    teams
+  );
+
+  // STEP 2: Build every possible matchup.
+  const pairs = [];
+
+  for (let i = 0; i < teams.length; i++) {
+    for (let j = i + 1; j < teams.length; j++) {
+      pairs.push({
+        teamA: teams[i],
+        teamB: teams[j]
+      });
+    }
+  }
+
+  console.log(
+    `[CHAMPIONSHIP] ${pairs.length} individual matchups to evaluate.`
+  );
+
+  // STEP 3: Evaluate matchups with limited concurrency.
+  // This avoids sending too many simultaneous requests to Gemini.
+  const matches = new Array(pairs.length);
+  let nextIndex = 0;
+  let completed = 0;
+
+  const workerCount = Math.min(2, pairs.length);
+
+  async function matchupWorker() {
+    while (true) {
+      const index = nextIndex++;
+
+      if (index >= pairs.length) return;
+
+      const pair = pairs[index];
+
+      console.log(
+        `[CHAMPIONSHIP] Evaluating matchup ${index + 1}/${pairs.length}: ` +
+        `${pair.teamA.playerName} vs ${pair.teamB.playerName}`
+      );
+
+      const match = await evaluateSingleMatchupWithGemini(
+        model,
+        pair.teamA,
+        pair.teamB
+      );
+
+      matches[index] = match;
+      completed++;
+
+      console.log(
+        `[CHAMPIONSHIP] Completed ${completed}/${pairs.length} matchups.`
+      );
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      { length: workerCount },
+      () => matchupWorker()
     )
   );
 
-  const actualPairSet = new Set();
-  const matches = [];
-
-  for (const entry of parsed.matchups) {
-    const aId = entry.teamAId;
-    const bId = entry.teamBId;
-
-    if (
-      !validIds.has(aId) ||
-      !validIds.has(bId) ||
-      aId === bId
-    ) {
-      throw new Error('Gemini returned an invalid matchup.');
-    }
-
-    const pairKey = [aId, bId].sort().join('|');
-
-    if (
-      !expectedPairSet.has(pairKey) ||
-      actualPairSet.has(pairKey)
-    ) {
-      throw new Error(
-        'Gemini returned a duplicate or unexpected matchup.'
-      );
-    }
-
-    actualPairSet.add(pairKey);
-
-    const scoreA = Number(entry.scoreA);
-    const scoreB = Number(entry.scoreB);
-
-    if (
-      !Number.isFinite(scoreA) ||
-      !Number.isFinite(scoreB)
-    ) {
-      throw new Error('Gemini returned invalid matchup scores.');
-    }
-
-    const cleanScoreA = Math.max(
-      1,
-      Math.min(100, Math.round(scoreA))
-    );
-
-    const cleanScoreB = Math.max(
-      1,
-      Math.min(100, Math.round(scoreB))
-    );
-
-    let winnerId = null;
-    let result = 'DRAW';
-
-    if (cleanScoreA > cleanScoreB) {
-      winnerId = aId;
-      result = 'TEAM_A_WINS';
-    } else if (cleanScoreB > cleanScoreA) {
-      winnerId = bId;
-      result = 'TEAM_B_WINS';
-    }
-
-    if (
-      entry.winnerId !== null &&
-      entry.winnerId !== undefined &&
-      entry.winnerId !== winnerId
-    ) {
-      throw new Error(
-        'Gemini returned a winner inconsistent with its matchup scores.'
-      );
-    }
-
-    const playerA = findPlayer(room, aId);
-    const playerB = findPlayer(room, bId);
-
-    const teamAAnalysis = normalizeCharacterAnalysis(
-      entry.teamAAnalysis,
-      playerA.team
-    );
-
-    const teamBAnalysis = normalizeCharacterAnalysis(
-      entry.teamBAnalysis,
-      playerB.team
-    );
-
-    matches.push({
-      teamAId: aId,
-      teamAName: playerA.name,
-      teamBId: bId,
-      teamBName: playerB.name,
-      scoreA: cleanScoreA,
-      scoreB: cleanScoreB,
-      winnerId,
-      result,
-
-      explanation: safeText(
-        entry.explanation,
-        `${playerA.name} scored ${cleanScoreA}/100 and ${playerB.name} scored ${cleanScoreB}/100.`
-      ),
-
-      teamAAnalysis,
-      teamBAnalysis,
-
-      analysisStatus: 'complete'
-    });
-  }
-
-  if (actualPairSet.size !== expectedPairSet.size) {
+  // STEP 4: Verify every matchup is present.
+  if (
+    matches.length !== pairs.length ||
+    matches.some(match => !match)
+  ) {
     throw new Error(
-      'Gemini did not evaluate every head-to-head matchup.'
+      'Championship evaluation is incomplete. One or more matchups are missing.'
     );
   }
 
-  const evaluations = room.players.map(player =>
-    evaluationMap.get(player.id)
-  );
-
+  // STEP 5: Calculate standings.
   const standings = calculateStandings(
     room,
     matches,
     evaluations
+  );
+
+  console.log(
+    `[CHAMPIONSHIP COMPLETE] Room ${room.code}.`
   );
 
   return {
@@ -1781,21 +1888,17 @@ matchup or character analysis.`
     totalMatches: matches.length,
     completedAt: Date.now(),
 
-    overallSummary: safeText(
-      parsed.overallSummary,
-      'The championship has been evaluated.'
-    ),
+    overallSummary:
+      `Gemini completed the detailed evaluation of ${teams.length} teams and ${matches.length} head-to-head matchups. Every matchup includes individual character analysis.`,
 
-    rankingExplanation: safeText(
-      parsed.rankingExplanation,
-      'Rankings are calculated from validated head-to-head matchup results.'
-    ),
+    rankingExplanation:
+      'Standings are calculated from the completed head-to-head matchups. Each win awards 3 points, each draw awards 1 point, and each loss awards 0 points. Tiebreakers are wins, score difference and the Gemini team evaluation score.',
 
     aiEvaluation: {
       provider: 'Gemini',
       status: 'complete',
       message:
-        'All team evaluations, head-to-head matchups and character-by-character analyses were validated.'
+        'All team evaluations and individual character matchup analyses were completed and validated.'
     },
 
     rankingRules: [
@@ -1836,7 +1939,7 @@ async function startChampionship(room) {
     aiEvaluation: {
       provider: 'Gemini',
       status: 'evaluating',
-      message: 'Character-by-character evaluation is in progress.'
+      message: 'Detailed character-by-character evaluation is in progress.'
     },
 
     rankingRules: []
