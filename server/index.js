@@ -20,6 +20,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rooms = new Map();
 const turnTimers = new Map();
 
+const IMAGE_TITLES = {
+  'marvel-spider-man': 'Spider-Man',
+  'marvel-iron-man': 'Iron Man',
+  'marvel-thor': 'Thor (Marvel Comics)',
+  'dc-batman': 'Batman',
+  'dc-superman': 'Superman',
+  'dc-wonder-woman': 'Wonder Woman',
+  'naruto-naruto': 'Naruto Uzumaki',
+  'naruto-sasuke': 'Sasuke Uchiha',
+  'dragonball-goku': 'Goku',
+  'dragonball-vegeta': 'Vegeta',
+  'ramayana-hanuman': 'Hanuman',
+  'mahabharata-arjuna': 'Arjuna'
+};
+
 const SEED_CHARACTERS = [
   {
     id: 'marvel-spider-man',
@@ -43,7 +58,7 @@ const SEED_CHARACTERS = [
     abilities: ['Powered armour', 'Repulsors', 'Flight'],
     strengths: ['Technology', 'Range', 'Adaptability'],
     weaknesses: ['Armour dependence'],
-    description: 'Tony Stark is an inventor who uses advanced powered armour, intelligent systems and a wide range of technological tools. His greatest advantage is the ability to adapt equipment and tactics to different challenges.',
+    description: 'Tony Stark is an inventor who uses advanced powered armour, intelligent systems and a wide range of technological tools.',
     combatStyle: 'Technology-driven ranged combat',
     sources: ['https://www.marvel.com/characters/iron-man-tony-stark']
   },
@@ -56,7 +71,7 @@ const SEED_CHARACTERS = [
     abilities: ['Asgardian physiology', 'Mjolnir', 'Lightning'],
     strengths: ['Durability', 'Strength', 'Energy projection'],
     weaknesses: ['Version-dependent limits'],
-    description: 'Thor is an Asgardian warrior with immense physical strength and control over powerful storm energy. His experience and durability make him a formidable character in prolonged confrontations.',
+    description: 'Thor is an Asgardian warrior with immense physical strength and control over powerful storm energy.',
     combatStyle: 'Powerful close combat and storm-based attacks',
     sources: ['https://www.marvel.com/characters/thor-thor-odinson']
   },
@@ -69,7 +84,7 @@ const SEED_CHARACTERS = [
     abilities: ['Detective skills', 'Martial arts', 'Technology'],
     strengths: ['Preparation', 'Strategy', 'Stealth'],
     weaknesses: ['Human physiology'],
-    description: 'Bruce Wayne is a highly trained detective and strategist. He combines scientific equipment, investigative ability, martial arts and careful planning to handle opponents with very different capabilities.',
+    description: 'Bruce Wayne is a highly trained detective and strategist who combines scientific equipment, investigative ability and martial arts.',
     combatStyle: 'Strategic, technical and stealth-oriented',
     sources: ['https://www.dc.com/characters/batman']
   },
@@ -82,7 +97,7 @@ const SEED_CHARACTERS = [
     abilities: ['Flight', 'Super strength', 'Heat vision'],
     strengths: ['Speed', 'Durability', 'Power'],
     weaknesses: ['Continuity-dependent vulnerabilities'],
-    description: 'Clark Kent is a Kryptonian whose abilities include exceptional strength, speed, flight and energy projection. His combination of power and experience gives him an advantage in many different types of matchups.',
+    description: 'Clark Kent is a Kryptonian whose abilities include exceptional strength, speed, flight and energy projection.',
     combatStyle: 'High-power physical and ranged combat',
     sources: ['https://www.dc.com/characters/superman']
   },
@@ -95,7 +110,7 @@ const SEED_CHARACTERS = [
     abilities: ['Amazonian abilities', 'Combat skill', 'Lasso'],
     strengths: ['Combat', 'Durability', 'Leadership'],
     weaknesses: ['Continuity-dependent limits'],
-    description: 'Diana is an Amazonian warrior known for her strength, discipline and extensive combat experience. Her equipment and leadership skills complement her physical abilities.',
+    description: 'Diana is an Amazonian warrior known for her strength, discipline and extensive combat experience.',
     combatStyle: 'Disciplined close combat and tactical defence',
     sources: ['https://www.dc.com/characters/wonder-woman']
   },
@@ -108,7 +123,7 @@ const SEED_CHARACTERS = [
     abilities: ['Shadow clones', 'Sage powers', 'Kurama chakra'],
     strengths: ['Chakra reserves', 'Versatility', 'Resilience'],
     weaknesses: ['Specific power-state limits'],
-    description: 'Naruto is a highly versatile ninja whose techniques, chakra reserves and ability to adapt allow him to approach challenges in many different ways. His shadow clones also provide tactical flexibility.',
+    description: 'Naruto is a highly versatile ninja whose techniques, chakra reserves and ability to adapt allow him to approach challenges in many different ways.',
     combatStyle: 'Versatile ninjutsu and high-energy combat',
     sources: ['https://naruto-official.com/en']
   },
@@ -121,7 +136,7 @@ const SEED_CHARACTERS = [
     abilities: ['Sharingan', 'Rinnegan-era techniques', 'Lightning release'],
     strengths: ['Perception', 'Ninjutsu', 'Tactics'],
     weaknesses: ['Chakra constraints'],
-    description: 'Sasuke is an exceptionally skilled shinobi who combines advanced visual abilities, lightning techniques and tactical intelligence. His precision and perception make him particularly adaptable.',
+    description: 'Sasuke is an exceptionally skilled shinobi who combines advanced visual abilities, lightning techniques and tactical intelligence.',
     combatStyle: 'Precision-based ninjutsu and tactical combat',
     sources: ['https://naruto-official.com/en']
   },
@@ -134,7 +149,7 @@ const SEED_CHARACTERS = [
     abilities: ['Ki control', 'Ultra Instinct forms'],
     strengths: ['Combat adaptation', 'Speed', 'Power'],
     weaknesses: ['Energy and form constraints'],
-    description: 'Goku is a Saiyan martial artist who constantly develops his abilities through training and competition. His combat experience and ability to adapt during a fight are central to his strength.',
+    description: 'Goku is a Saiyan martial artist who constantly develops his abilities through training and competition.',
     combatStyle: 'Martial arts and ki-based combat',
     sources: ['https://dragon-ball-official.com/']
   },
@@ -147,7 +162,7 @@ const SEED_CHARACTERS = [
     abilities: ['Ki control', 'Saiyan transformations'],
     strengths: ['Combat skill', 'Power', 'Determination'],
     weaknesses: ['Energy and form constraints'],
-    description: 'Vegeta is a powerful Saiyan warrior whose disciplined training, technical combat skill and determination drive his development. He is known for his direct and highly competitive fighting approach.',
+    description: 'Vegeta is a powerful Saiyan warrior whose disciplined training, technical combat skill and determination drive his development.',
     combatStyle: 'Aggressive martial arts and ki-based combat',
     sources: ['https://dragon-ball-official.com/']
   },
@@ -160,7 +175,7 @@ const SEED_CHARACTERS = [
     abilities: ['Immense strength', 'Flight', 'Form-changing'],
     strengths: ['Devotion', 'Strength', 'Resilience'],
     weaknesses: ['Tradition-specific interpretations'],
-    description: 'Hanuman is revered in the Ramayana for extraordinary strength, courage, wisdom and devotion. Different traditions describe his abilities in different ways.',
+    description: 'Hanuman is revered in the Ramayana for extraordinary strength, courage, wisdom and devotion.',
     combatStyle: 'Mythological strength and extraordinary mobility',
     sources: ['https://www.valmiki.iitk.ac.in/']
   },
@@ -173,7 +188,7 @@ const SEED_CHARACTERS = [
     abilities: ['Archery', 'Divine astras', 'Warfare'],
     strengths: ['Precision', 'Discipline', 'Combat skill'],
     weaknesses: ['Weapon and context constraints'],
-    description: 'Arjuna is one of the central warriors of the Mahabharata, renowned for exceptional archery, discipline and knowledge of warfare. His skill is closely associated with focus and training.',
+    description: 'Arjuna is one of the central warriors of the Mahabharata, renowned for exceptional archery, discipline and knowledge of warfare.',
     combatStyle: 'Precision archery and traditional warfare',
     sources: ['https://www.sacred-texts.com/hin/']
   }
@@ -192,6 +207,37 @@ function shuffle(list) {
   }
 
   return array;
+}
+
+// Fetch character thumbnails from Wikipedia.
+// If a page has no usable thumbnail, the character's fallback artwork is used.
+async function addCharacterImages(characters) {
+  return Promise.all(characters.map(async character => {
+    const title = IMAGE_TITLES[character.id];
+
+    if (!title) return character;
+
+    try {
+      const url =
+        `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+
+      const response = await fetch(url, {
+        headers: { 'User-Agent': 'BattleAuction/2.0' },
+        signal: AbortSignal.timeout(5000)
+      });
+
+      if (!response.ok) return character;
+
+      const data = await response.json();
+      const imageUrl =
+        data.thumbnail?.source || data.originalimage?.source || null;
+
+      return { ...character, imageUrl };
+    } catch (error) {
+      console.warn(`Image lookup failed for ${character.name}:`, error.message);
+      return character;
+    }
+  }));
 }
 
 function roomCode() {
@@ -227,7 +273,8 @@ function publicRoom(room) {
     auctionLog: room.auctionLog,
     results: room.results,
     championship: room.championship,
-    reserveCount: room.reserveCharacters.length
+    reserveCount: room.reserveCharacters.length,
+    completionError: room.completionError
   };
 }
 
@@ -439,10 +486,8 @@ function completeAuction(room) {
   }
 
   emptySlots.forEach((player, index) => {
-    const character = reserve[index];
-
     player.team.push({
-      ...clone(character),
+      ...clone(reserve[index]),
       paid: 0,
       allocatedFree: true
     });
@@ -495,17 +540,9 @@ function createMatch(teamA, teamB) {
     result = 'TEAM_B_WINS';
   }
 
-  let explanation;
-
-  if (result === 'DRAW') {
-    explanation =
-      'Both teams have the same calculated strength. The match is recorded as a draw.';
-  } else {
-    const winner = winnerId === teamA.id ? teamA : teamB;
-    explanation =
-      `${winner.name} wins with a calculated team strength of ` +
-      `${Math.max(scoreA, scoreB)} compared with ${Math.min(scoreA, scoreB)}.`;
-  }
+  const explanation = result === 'DRAW'
+    ? 'Both teams have the same calculated strength. The match is recorded as a draw.'
+    : `${winnerId === teamA.id ? teamA.name : teamB.name} wins with a calculated team strength of ${Math.max(scoreA, scoreB)} compared with ${Math.min(scoreA, scoreB)}.`;
 
   return {
     teamAId: teamA.id,
@@ -537,16 +574,14 @@ function startChampionship(room) {
     const wins = played.filter(match => match.winnerId === player.id).length;
     const draws = played.filter(match => match.result === 'DRAW').length;
     const losses = played.length - wins - draws;
-
     const points = wins * 3 + draws;
+
     const scoreDifference = played.reduce((total, match) => {
       if (match.teamAId === player.id) {
         return total + match.scoreA - match.scoreB;
       }
       return total + match.scoreB - match.scoreA;
     }, 0);
-
-    const averageRating = calculateTeamStrength(player.team);
 
     return {
       playerId: player.id,
@@ -556,7 +591,7 @@ function startChampionship(room) {
       losses,
       points,
       scoreDifference,
-      teamStrength: averageRating,
+      teamStrength: calculateTeamStrength(player.team),
       team: player.team
     };
   });
@@ -722,10 +757,7 @@ io.on('connection', socket => {
     const room = rooms.get(String(code || '').toUpperCase());
 
     if (!room || room.status !== 'lobby') {
-      return socket.emit(
-        'error:message',
-        'Room not found or game already started.'
-      );
+      return socket.emit('error:message', 'Room not found or game already started.');
     }
 
     if (room.players.length >= 10) {
@@ -747,7 +779,7 @@ io.on('connection', socket => {
     emitRoom(room);
   });
 
-  socket.on('room:start', ({
+  socket.on('room:start', async ({
     universes,
     teamSize,
     turnSeconds,
@@ -776,9 +808,9 @@ io.on('connection', socket => {
     if (
       !Number.isInteger(parsedTurnSeconds) ||
       parsedTurnSeconds < 5 ||
-      parsedTurnSeconds > 60
+      parsedTurnSeconds > 120
     ) {
-      return socket.emit('error:message', 'Turn duration must be between 5 and 60 seconds.');
+      return socket.emit('error:message', 'Turn duration must be between 5 and 120 seconds.');
     }
 
     if (
@@ -819,7 +851,14 @@ io.on('connection', socket => {
     room.settings.universes = selectedUniverses;
     room.settings.characterCount = requiredCharacters;
 
-    room.characters = shuffle(pool).slice(0, requiredCharacters);
+    const selectedCharacters = shuffle(pool).slice(0, requiredCharacters);
+
+    // Image lookups are optional; the auction still starts if they fail.
+    room.characters = await addCharacterImages(selectedCharacters);
+
+    // The host may have left or the room may have changed during image lookup.
+    if (room.status !== 'lobby' || !rooms.has(room.code)) return;
+
     room.players.forEach(player => {
       player.budget = room.settings.startingBudget;
       player.team = [];
@@ -838,8 +877,6 @@ io.on('connection', socket => {
     room.reserveCharacters = [];
     room.championship = null;
     room.completionError = null;
-
-    // The host must press Next Character to begin the first auction.
     room.status = 'auction_ready';
 
     emitRoom(room);
@@ -883,20 +920,14 @@ io.on('connection', socket => {
       current.id !== socket.id ||
       Date.now() > room.turnDeadline
     ) {
-      return socket.emit(
-        'error:message',
-        'It is not your turn or your turn has expired.'
-      );
+      return socket.emit('error:message', 'It is not your turn or your turn has expired.');
     }
 
     const player = room.players.find(p => p.id === socket.id);
     const increment = Number(amount);
 
     if (!Number.isInteger(increment) || increment < 1) {
-      return socket.emit(
-        'error:message',
-        'Enter a whole-number increase of at least ₹1.'
-      );
+      return socket.emit('error:message', 'Enter a whole-number increase of at least ₹1.');
     }
 
     if (player.team.length >= room.settings.teamSize) {
@@ -906,10 +937,7 @@ io.on('connection', socket => {
     const newBid = room.currentBid + increment;
 
     if (newBid > player.budget) {
-      return socket.emit(
-        'error:message',
-        'That bid exceeds your remaining budget.'
-      );
+      return socket.emit('error:message', 'That bid exceeds your remaining budget.');
     }
 
     stopTimer(room.code);
@@ -942,10 +970,7 @@ io.on('connection', socket => {
       current.id !== socket.id ||
       Date.now() > room.turnDeadline
     ) {
-      return socket.emit(
-        'error:message',
-        'It is not your turn or your turn has expired.'
-      );
+      return socket.emit('error:message', 'It is not your turn or your turn has expired.');
     }
 
     passTurn(room, 'SKIP');
@@ -957,10 +982,7 @@ io.on('connection', socket => {
     if (!isHost(room, socket)) return;
 
     if (room.status !== 'ready_for_fight') {
-      return socket.emit(
-        'error:message',
-        'The teams are not ready for the championship.'
-      );
+      return socket.emit('error:message', 'The teams are not ready for the championship.');
     }
 
     const incompletePlayer = room.players.find(player =>
@@ -968,10 +990,7 @@ io.on('connection', socket => {
     );
 
     if (incompletePlayer) {
-      return socket.emit(
-        'error:message',
-        `${incompletePlayer.name}'s team is not complete yet.`
-      );
+      return socket.emit('error:message', `${incompletePlayer.name}'s team is not complete yet.`);
     }
 
     startChampionship(room);
@@ -980,23 +999,43 @@ io.on('connection', socket => {
   socket.on('disconnect', () => {
     for (const room of rooms.values()) {
       const player = room.players.find(p => p.id === socket.id);
-
       if (!player) continue;
+
+      // Remember whose turn it was before removing this player from active players.
+      const previousCurrentId =
+        room.status === 'auction' ? getCurrentPlayer(room)?.id : null;
 
       player.connected = false;
 
       if (room.status === 'auction') {
-        const current = getCurrentPlayer(room);
+        const remainingPlayers = activePlayers(room);
 
-        if (current?.id === socket.id) {
+        if (previousCurrentId === socket.id) {
+          stopTimer(room.code);
           room.noIncreaseTurns++;
-          room.currentTurnIndex++;
-          beginTurn(room);
-          continue;
-        }
-      }
 
-      emitRoom(room);
+          // The next player now occupies the disconnected player's old index.
+          if (remainingPlayers.length) {
+            room.currentTurnIndex =
+              room.currentTurnIndex % remainingPlayers.length;
+            beginTurn(room);
+          } else {
+            room.status = 'auction_paused';
+            room.turnDeadline = null;
+            emitRoom(room);
+          }
+        } else {
+          // Preserve the current player's identity if someone else disconnects.
+          const newIndex = remainingPlayers.findIndex(
+            activePlayer => activePlayer.id === previousCurrentId
+          );
+
+          if (newIndex >= 0) room.currentTurnIndex = newIndex;
+          emitRoom(room);
+        }
+      } else {
+        emitRoom(room);
+      }
     }
   });
 });
