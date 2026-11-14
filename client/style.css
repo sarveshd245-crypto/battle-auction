@@ -965,3 +965,134 @@ footer {
     max-width: 100%;
   }
 }
+
+/* Detailed championship evaluation */
+
+.championship-summary {
+  border-color: rgba(255, 190, 80, 0.35);
+}
+
+.championship-summary p,
+.ranking-explanation p,
+.analysis-section p {
+  line-height: 1.7;
+  color: var(--text-secondary, #c5c5d0);
+}
+
+.team-analysis-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.team-analysis-card {
+  padding: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.team-analysis-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.team-analysis-heading h3 {
+  margin: 5px 0;
+}
+
+.analysis-score {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 76px;
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(255, 190, 80, 0.10);
+}
+
+.analysis-score strong {
+  font-size: 22px;
+}
+
+.analysis-score small {
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+.analysis-summary {
+  line-height: 1.7;
+  margin: 12px 0 18px;
+}
+
+.analysis-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.analysis-section {
+  padding: 14px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.analysis-section h4 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+
+.analysis-section h3 {
+  margin-top: 0;
+}
+
+.analysis-list {
+  padding-left: 18px;
+  margin-bottom: 0;
+  line-height: 1.65;
+}
+
+.analysis-list li {
+  margin-bottom: 6px;
+}
+
+.contribution-list {
+  display: grid;
+  gap: 10px;
+}
+
+.contribution-item {
+  padding: 10px;
+  border-left: 3px solid rgba(255, 190, 80, 0.65);
+  background: rgba(255, 255, 255, 0.035);
+  border-radius: 5px;
+}
+
+.contribution-item p {
+  margin: 6px 0 0;
+  line-height: 1.6;
+}
+
+.ranking-explanation {
+  margin-top: 16px;
+}
+
+@media (max-width: 650px) {
+  .analysis-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .team-analysis-card {
+    padding: 14px;
+  }
+
+  .team-analysis-heading {
+    align-items: flex-start;
+  }
+}
