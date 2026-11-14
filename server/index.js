@@ -1,3 +1,4 @@
+
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
@@ -119,11 +120,11 @@ const SEED_CHARACTERS = [
     name: 'Hanuman',
     universe: 'Ramayana',
     version: 'Traditional epic',
-    rating: 98,
+    rating: 99,
     abilities: ['Immense strength', 'Flight', 'Form-changing'],
-    strengths: ['Devotion', 'Strength', 'Resilience'],
+    strengths: ['Strength', 'Resilience', 'Combat skill'],
     weaknesses: ['Tradition-specific interpretations'],
-    description: 'Hanuman is revered for extraordinary strength, courage and devotion.',
+    description: 'Hanuman is a powerful Vanara warrior.',
     combatStyle: 'Mythological strength and mobility',
     sources: []
   },
@@ -132,7 +133,7 @@ const SEED_CHARACTERS = [
     name: 'Arjuna',
     universe: 'Mahabharata',
     version: 'Traditional epic',
-    rating: 91,
+    rating: 99,
     abilities: ['Archery', 'Divine astras', 'Warfare'],
     strengths: ['Precision', 'Discipline', 'Combat skill'],
     weaknesses: ['Weapon and context constraints'],
@@ -302,7 +303,6 @@ async function getWikipediaImage(character) {
 
       const name = character.name.toLowerCase();
 
-      // Prefer a page whose title contains the character's name.
       const bestPage =
         pages.find(page =>
           String(page.title || '').toLowerCase().includes(name)
@@ -348,98 +348,94 @@ async function attachCharacterImages(characters) {
 }
 
 // --------------------------------------------------
-// GEMINI CHARACTER GENERATION
+// WARRIOR-ONLY EPIC CHARACTER DATABASES
 // --------------------------------------------------
-
-// --------------------------------------------------
-// GEMINI CHARACTER GENERATION — IMPROVED VERSION
-// --------------------------------------------------
-
-// Reliable built-in characters for the two Indian epics.
-// These are used whenever Gemini returns too few characters
-// or its API request fails.
 
 const EPIC_CHARACTERS = {
   Ramayana: [
-    ['Rama', 98, 'Prince of Ayodhya and central figure of the Ramayana'],
-    ['Sita', 94, 'Princess of Mithila and wife of Rama'],
-    ['Hanuman', 99, 'Devoted follower of Rama with extraordinary abilities'],
-    ['Lakshmana', 92, 'Brother of Rama and devoted warrior'],
-    ['Bharata', 88, 'Brother of Rama known for loyalty and duty'],
-    ['Shatrughna', 85, 'Youngest brother of Rama'],
-    ['Ravana', 97, 'King of Lanka, powerful scholar and warrior'],
-    ['Kumbhakarna', 93, 'Brother of Ravana known for immense strength'],
-    ['Indrajit', 95, 'Son of Ravana and formidable warrior'],
-    ['Vibhishana', 87, 'Brother of Ravana who supported Rama'],
-    ['Sugriva', 86, 'King of the Vanaras and ally of Rama'],
-    ['Vali', 94, 'Powerful Vanara king'],
-    ['Angada', 88, 'Son of Vali and warrior in Rama’s army'],
-    ['Jambavan', 90, 'Wise bear king and experienced warrior'],
-    ['Jatayu', 84, 'Noble bird who tried to protect Sita'],
-    ['Garuda', 97, 'Divine eagle and vehicle of Vishnu'],
-    ['Dasharatha', 86, 'King of Ayodhya and father of Rama'],
-    ['Kaikeyi', 75, 'Queen of Ayodhya and mother of Bharata'],
-    ['Kaushalya', 78, 'Mother of Rama'],
-    ['Sumitra', 78, 'Mother of Lakshmana and Shatrughna'],
-    ['Urmila', 78, 'Wife of Lakshmana'],
-    ['Mandodari', 82, 'Queen of Lanka and wife of Ravana'],
-    ['Surpanakha', 77, 'Sister of Ravana'],
-    ['Maricha', 84, 'Rakshasa associated with the golden deer'],
-    ['Subahu', 80, 'Rakshasa who opposed Rama'],
-    ['Tataka', 82, 'Powerful Rakshasi defeated by Rama'],
-    ['Ahalya', 75, 'Figure associated with the story of Rama'],
-    ['Vishwamitra', 94, 'Sage who trained and guided Rama'],
-    ['Vashishtha', 91, 'Royal sage of Ayodhya'],
-    ['Agastya', 92, 'Great sage who advised Rama'],
-    ['Shabari', 78, 'Devoted follower of Rama'],
-    ['Nala', 87, 'Vanara engineer who helped build the bridge'],
-    ['Nila', 85, 'Vanara commander and builder'],
-    ['Malyavan', 78, 'Elder adviser in Ravana’s court'],
-    ['Prahasta', 86, 'Commander of Ravana’s army']
+    ['Rama', 98, 'Prince of Ayodhya and skilled warrior and archer'],
+    ['Lakshmana', 94, 'Brother of Rama and powerful warrior'],
+    ['Bharata', 88, 'Brother of Rama and warrior prince'],
+    ['Shatrughna', 87, 'Brother of Rama and warrior prince'],
+    ['Hanuman', 99, 'Powerful Vanara warrior with extraordinary strength'],
+    ['Ravana', 98, 'King of Lanka and formidable warrior'],
+    ['Kumbhakarna', 95, 'Powerful warrior and brother of Ravana'],
+    ['Indrajit', 97, 'Son of Ravana and master of celestial weapons'],
+    ['Vibhishana', 87, 'Brother of Ravana who fought alongside Rama'],
+    ['Sugriva', 90, 'Vanara king and warrior ally of Rama'],
+    ['Vali', 96, 'Extremely powerful Vanara warrior and king'],
+    ['Angada', 91, 'Son of Vali and skilled Vanara warrior'],
+    ['Jambavan', 92, 'Experienced warrior and leader of the bear army'],
+    ['Jatayu', 86, 'Warrior bird who fought to protect Sita'],
+    ['Garuda', 98, 'Divine warrior bird with immense power'],
+    ['Maricha', 85, 'Rakshasa warrior with magical abilities'],
+    ['Subahu', 83, 'Rakshasa warrior who fought against Rama'],
+    ['Tataka', 85, 'Powerful Rakshasi warrior'],
+    ['Nala', 87, 'Vanara warrior and bridge builder'],
+    ['Nila', 87, 'Vanara warrior and commander'],
+    ['Prahasta', 91, 'Chief commander of Ravana’s army'],
+    ['Akampana', 85, 'Rakshasa warrior in Ravana’s army'],
+    ['Atikaya', 92, 'Powerful son of Ravana and warrior'],
+    ['Narantaka', 87, 'Son of Ravana and warrior'],
+    ['Devantaka', 88, 'Son of Ravana and powerful fighter'],
+    ['Trishira', 87, 'Three-headed warrior in Ravana’s army'],
+    ['Mahodara', 85, 'Rakshasa commander of Lanka'],
+    ['Mahaparshva', 85, 'Rakshasa warrior and commander'],
+    ['Dhumraksha', 86, 'Rakshasa general in Ravana’s army'],
+    ['Vajradamshtra', 86, 'Powerful Rakshasa warrior'],
+    ['Kumbha', 89, 'Son of Kumbhakarna and warrior of Lanka'],
+    ['Nikumbha', 88, 'Son of Kumbhakarna and Rakshasa warrior'],
+    ['Mainda', 85, 'Vanara warrior in Rama’s army'],
+    ['Dvivida', 86, 'Vanara warrior and commander'],
+    ['Gavaksha', 84, 'Vanara commander in Rama’s army'],
+    ['Gaja', 84, 'Vanara warrior and commander'],
+    ['Rishabha', 84, 'Vanara warrior who fought in Lanka'],
+    ['Sushena', 85, 'Vanara commander and warrior'],
+    ['Makaraksha', 87, 'Son of Khara and Rakshasa warrior'],
+    ['Virupaksha', 84, 'Rakshasa warrior of Lanka']
   ],
 
   Mahabharata: [
-    ['Krishna', 100, 'Guide and strategist of the Pandavas'],
-    ['Arjuna', 98, 'Exceptional archer and warrior'],
-    ['Karna', 97, 'Legendary warrior known for generosity and skill'],
-    ['Bhishma', 98, 'Grand commander of the Kaurava army'],
-    ['Drona', 96, 'Master teacher of warfare and archery'],
-    ['Ashwatthama', 94, 'Son of Drona and powerful warrior'],
-    ['Bhima', 96, 'Pandava known for immense physical strength'],
-    ['Yudhishthira', 91, 'Eldest Pandava known for commitment to dharma'],
-    ['Nakula', 88, 'Pandava skilled in swordsmanship and horse care'],
-    ['Sahadeva', 89, 'Pandava known for intelligence and knowledge'],
-    ['Duryodhana', 95, 'Leader of the Kauravas'],
-    ['Dushasana', 87, 'Brother of Duryodhana'],
-    ['Shakuni', 89, 'Strategist and maternal uncle of the Kauravas'],
-    ['Abhimanyu', 94, 'Son of Arjuna and skilled young warrior'],
-    ['Ghatotkacha', 93, 'Son of Bhima with powerful abilities'],
-    ['Draupadi', 90, 'Queen and wife of the five Pandavas'],
-    ['Kunti', 88, 'Mother of the Pandavas'],
-    ['Gandhari', 85, 'Queen of Hastinapura and mother of the Kauravas'],
-    ['Vidura', 88, 'Wise adviser of the Kuru kingdom'],
-    ['Dhritarashtra', 82, 'King of Hastinapura'],
-    ['Sanjaya', 82, 'Narrator of the Kurukshetra war to Dhritarashtra'],
-    ['Balarama', 96, 'Elder brother of Krishna and master of the mace'],
-    ['Satyaki', 91, 'Yadava warrior allied with the Pandavas'],
-    ['Kripacharya', 91, 'Warrior and teacher who fought in the war'],
-    ['Shikhandi', 86, 'Warrior who played a key role against Bhishma'],
-    ['Dhrishtadyumna', 90, 'Commander of the Pandava army'],
-    ['Ganga', 94, 'Divine river goddess and mother of Bhishma'],
-    ['Parashurama', 99, 'Legendary warrior sage and teacher'],
-    ['Ekalavya', 91, 'Archer renowned for dedication and skill'],
-    ['Jayadratha', 87, 'King who fought on the Kaurava side'],
-    ['Barbarika', 98, 'Legendary warrior associated with the Mahabharata tradition'],
-    ['Uttara Kumara', 82, 'Prince of Matsya who fought alongside Arjuna'],
-    ['Virata', 84, 'King of Matsya'],
-    ['Drupada', 88, 'King of Panchala and father of Draupadi'],
-    ['Pandu', 84, 'Father of the Pandavas'],
-    ['Subhadra', 86, 'Sister of Krishna and mother of Abhimanyu'],
-    ['Ulupi', 85, 'Naga princess and wife of Arjuna'],
-    ['Chitrangada', 84, 'Princess of Manipura and wife of Arjuna'],
-    ['Ganga Putra Devavrata', 94, 'Another name associated with Bhishma'],
-    ['Somadatta', 83, 'Kuru-side warrior'],
-    ['Bhagadatta', 90, 'King of Pragjyotisha and elephant warrior']
+    ['Krishna', 100, 'Strategist and guide who played a key role in the war'],
+    ['Arjuna', 99, 'Legendary archer and one of the greatest warriors'],
+    ['Karna', 98, 'Legendary archer and formidable warrior'],
+    ['Bhishma', 99, 'Grand commander and master of warfare'],
+    ['Drona', 97, 'Master of archery and military strategy'],
+    ['Ashwatthama', 96, 'Powerful warrior and son of Drona'],
+    ['Bhima', 97, 'Pandava warrior known for immense strength'],
+    ['Yudhishthira', 91, 'Pandava warrior and skilled fighter'],
+    ['Nakula', 90, 'Pandava warrior skilled in swordsmanship'],
+    ['Sahadeva', 90, 'Pandava warrior and skilled fighter'],
+    ['Duryodhana', 96, 'Kaurava leader and master of mace fighting'],
+    ['Dushasana', 88, 'Kaurava warrior and brother of Duryodhana'],
+    ['Abhimanyu', 96, 'Young warrior renowned for entering the Chakravyuha'],
+    ['Ghatotkacha', 96, 'Powerful warrior and son of Bhima'],
+    ['Balarama', 97, 'Master of mace fighting and powerful warrior'],
+    ['Satyaki', 93, 'Skilled Yadava warrior allied with the Pandavas'],
+    ['Kripacharya', 94, 'Experienced warrior and master of weapons'],
+    ['Shikhandi', 90, 'Warrior who played a key role against Bhishma'],
+    ['Dhrishtadyumna', 94, 'Commander of the Pandava army'],
+    ['Parashurama', 100, 'Legendary warrior and master of weapons'],
+    ['Ekalavya', 94, 'Exceptional archer known for his dedication'],
+    ['Jayadratha', 89, 'King and warrior who fought for the Kauravas'],
+    ['Barbarika', 99, 'Legendary warrior with extraordinary archery skills'],
+    ['Uttara Kumara', 85, 'Prince and warrior of the Matsya kingdom'],
+    ['Virata', 88, 'King of Matsya and warrior'],
+    ['Drupada', 90, 'King of Panchala and experienced warrior'],
+    ['Pandu', 89, 'Father of the Pandavas and skilled archer'],
+    ['Somadatta', 87, 'Kuru-side warrior'],
+    ['Bhagadatta', 94, 'King and elephant-warrior who fought for the Kauravas'],
+    ['Shalya', 93, 'King of Madra and powerful warrior'],
+    ['Kritavarma', 91, 'Yadava warrior who fought for the Kauravas'],
+    ['Bhurishravas', 91, 'Experienced Kuru-side warrior'],
+    ['Vikarna', 86, 'Kaurava warrior and brother of Duryodhana'],
+    ['Alambusha', 90, 'Rakshasa warrior who fought in the Kurukshetra war'],
+    ['Bahlika', 88, 'Elder Kuru warrior and king'],
+    ['Sudakshina', 87, 'King of Kamboja and warrior'],
+    ['Brihadbala', 88, 'King of Kosala who fought in the war'],
+    ['Susharma', 88, 'King of Trigarta and warrior'],
+    ['Chekitana', 89, 'Warrior who fought on the Pandava side'],
+    ['Yuyutsu', 85, 'Kaurava brother who fought for the Pandavas']
   ]
 };
 
@@ -452,18 +448,34 @@ function makeEpicSeedCharacters(genre) {
     universe: genre,
     version: 'Traditional epic',
     rating,
-    abilities: ['Traditional epic abilities', 'Warfare and strategy'],
-    strengths: ['Experience', 'Courage', 'Special abilities'],
+    abilities: ['Traditional epic combat abilities', 'Warfare and strategy'],
+    strengths: ['Experience', 'Courage', 'Combat skill'],
     weaknesses: ['Depends on the version and interpretation'],
     description,
-    combatStyle: 'Traditional epic warrior or character',
+    combatStyle: 'Traditional epic warrior',
     sources: [],
     imageUrl: null
   }));
 }
 
+// --------------------------------------------------
+// GEMINI CHARACTER GENERATION
+// --------------------------------------------------
+
 async function generateGenreCharacters(genre) {
-  // Start with reliable built-in entries.
+
+  // Epic genres use only the curated warrior databases.
+  // Gemini cannot add non-warrior characters to these pools.
+  if (genre === 'Ramayana' || genre === 'Mahabharata') {
+    const warriors = makeEpicSeedCharacters(genre);
+
+    console.log(
+      `${genre}: ${warriors.length} curated warriors available`
+    );
+
+    return warriors;
+  }
+
   const generated = [];
   const seen = new Set();
 
@@ -480,22 +492,12 @@ async function generateGenreCharacters(genre) {
     generated.push(character);
   }
 
-  // Add epic characters before requesting Gemini.
-  // This guarantees that Ramayana and Mahabharata
-  // have a useful base pool even if Gemini fails.
-  for (const character of makeEpicSeedCharacters(genre)) {
-    addCharacter(character);
-  }
-
-  // Add existing seed characters.
   for (const character of SEED_CHARACTERS.filter(
     item => item.universe === genre
   )) {
     addCharacter(clone(character));
   }
 
-  // Request additional characters from Gemini.
-  // Smaller batches are more reliable than asking for 100 at once.
   if (process.env.GEMINI_API_KEY) {
     try {
       const model = getGeminiModel();
@@ -513,25 +515,22 @@ async function generateGenreCharacters(genre) {
 Generate ${count} additional established and distinct characters
 from "${genre}".
 
-IMPORTANT:
-- Do not repeat any character in this existing list:
+Do not repeat these names:
 ${existingNames}
-- Do not invent characters.
-- Use well-known and established characters.
-- For Ramayana and Mahabharata, use figures from traditional epic literature.
-- For Marvel and DC, use established comic-book characters.
-- For Harry Potter, use established characters from the books and films.
-- For Anime, use established characters from anime series.
-- For Football and Cricket, use real established players.
-- Keep descriptions short.
-- Return as many valid distinct entries as possible.
+
+Do not invent characters.
+Use established characters only.
+For Football and Cricket, use real established players.
+For Marvel and DC, use established comic-book characters.
+For Harry Potter, use established characters from the books and films.
+For Anime, use established characters from anime series.
 
 Return JSON only:
 {
   "characters": [
     {
       "name": "Character name",
-      "version": "Series, era or traditional version",
+      "version": "Series or version",
       "rating": 85,
       "abilities": ["Ability 1", "Ability 2"],
       "strengths": ["Strength 1", "Strength 2"],
@@ -556,6 +555,7 @@ Return JSON only:
 
             if (generated.length >= 100) break;
           }
+
         } catch (error) {
           console.warn(
             `Gemini batch ${batch + 1} failed for ${genre}:`,
@@ -563,6 +563,7 @@ Return JSON only:
           );
         }
       }
+
     } catch (error) {
       console.warn(
         `Gemini unavailable for ${genre}:`,
@@ -597,6 +598,7 @@ async function getGenreCharacters(genre) {
     throw error;
   }
 }
+
 // --------------------------------------------------
 // ROOM DATA AND PRIVATE TEAM VISIBILITY
 // --------------------------------------------------
@@ -632,13 +634,8 @@ function publicRoom(room, viewerId) {
     currentBid: room.currentBid,
     highestBidderId: room.highestBidderId,
     lastBidderId: room.lastBidderId,
-
-    // New stable turn identifier.
     currentTurnPlayerId: room.currentTurnPlayerId,
-
-    // Keep the old index field for compatibility.
     currentTurnIndex: Math.max(0, currentTurnIndex),
-
     turnDeadline: room.turnDeadline,
     noIncreaseTurns: room.noIncreaseTurns,
     openingPlayerId: room.openingPlayerId,
@@ -648,8 +645,6 @@ function publicRoom(room, viewerId) {
     championship: room.championship,
     reserveCount: room.reserveCharacters.length,
     completionError: room.completionError,
-
-    // Clients can use these to reject old updates.
     stateVersion: room.stateVersion || 0,
     serverTime: Date.now()
   };
@@ -698,11 +693,12 @@ function canBid(player, room) {
 }
 
 // --------------------------------------------------
-// AUCTION TURN MANAGEMENT
+// AUCTION TURN MANAGEMENT — FIXED
 // --------------------------------------------------
 
 function getNextEligiblePlayer(room, afterPlayerId) {
   const players = room.players;
+
   if (!players.length) return null;
 
   const startIndex = players.findIndex(
@@ -710,7 +706,9 @@ function getNextEligiblePlayer(room, afterPlayerId) {
   );
 
   for (let step = 1; step <= players.length; step++) {
-    const index = (Math.max(startIndex, -1) + step) % players.length;
+    const index =
+      (Math.max(startIndex, -1) + step) % players.length;
+
     const player = players[index];
 
     if (!player.connected) continue;
@@ -756,18 +754,33 @@ function beginTurn(room) {
     return;
   }
 
-  // If every other eligible player has passed, resolve the auction.
-  const nextPlayer = getNextEligiblePlayer(
+  // Do not skip the selected opening player.
+  let currentPlayer = findPlayer(
     room,
     room.currentTurnPlayerId
   );
 
-  if (!nextPlayer) {
+  const eligible =
+    currentPlayer &&
+    currentPlayer.connected &&
+    currentPlayer.id !== room.highestBidderId &&
+    !room.passedPlayerIds.has(currentPlayer.id) &&
+    canBid(currentPlayer, room);
+
+  if (!eligible) {
+    currentPlayer = getNextEligiblePlayer(
+      room,
+      room.currentTurnPlayerId
+    );
+  }
+
+  if (!currentPlayer) {
     resolveAuction(room);
     return;
   }
 
-  room.currentTurnPlayerId = nextPlayer.id;
+  room.currentTurnPlayerId = currentPlayer.id;
+
   room.turnDeadline =
     Date.now() + room.settings.turnSeconds * 1000;
 
@@ -797,7 +810,10 @@ function passTurn(room, reason = 'SKIP') {
 
   stopTimer(room.code);
 
-  const player = findPlayer(room, room.currentTurnPlayerId);
+  const player = findPlayer(
+    room,
+    room.currentTurnPlayerId
+  );
 
   if (player) {
     room.passedPlayerIds.add(player.id);
@@ -812,6 +828,7 @@ function passTurn(room, reason = 'SKIP') {
   });
 
   room.turnDeadline = null;
+
   finishTurnCycle(room);
 }
 
@@ -826,7 +843,6 @@ function resolveAuction(room) {
 
   const character = clone(room.currentCharacter);
   const winnerId = room.lastBidderId;
-
   const winner = findPlayer(room, winnerId);
 
   let awarded = false;
@@ -874,6 +890,8 @@ function resolveAuction(room) {
     at: Date.now()
   });
 
+  // The winning player opens the next auction.
+  // If there was no winner, retain the previous opener.
   room.nextOpeningPlayerId = awarded
     ? winner.id
     : (room.openingPlayerId || room.hostId);
@@ -1182,11 +1200,11 @@ For each team, evaluate:
 2. Short overall summary.
 3. Main strengths.
 4. Main weaknesses.
-5. Team synergy: how well the characters complement one another.
-6. Team balance: coverage of different roles and abilities.
-7. Vulnerabilities: important gaps or shared weaknesses.
-8. Key contributions: explain what each character contributes.
-9. Ranking rationale: why this team deserves its evaluation score.
+5. Team synergy.
+6. Team balance.
+7. Vulnerabilities.
+8. Key contributions from each character.
+9. Ranking rationale.
 
 For Football and Cricket, evaluate sporting ability and team balance.
 For fictional teams, evaluate the supplied character abilities and team composition.
@@ -1255,8 +1273,6 @@ ${JSON.stringify(teams)}
 
   const playerIds = room.players.map(player => player.id);
   const validIds = new Set(playerIds);
-
-  // Validate that every player is evaluated exactly once.
   const evaluationMap = new Map();
 
   for (const entry of parsed.teams) {
@@ -1300,7 +1316,6 @@ ${JSON.stringify(teams)}
     throw new Error('Gemini did not evaluate every player exactly once.');
   }
 
-  // Validate every possible head-to-head matchup.
   const expectedPairs = new Set();
 
   for (let i = 0; i < playerIds.length; i++) {
@@ -1353,7 +1368,6 @@ ${JSON.stringify(teams)}
       result = 'TEAM_B_WINS';
     }
 
-    // Do not trust a contradictory winner ID from the AI.
     const suppliedWinner = entry.winnerId;
 
     if (
@@ -1455,7 +1469,6 @@ async function startChampionship(room) {
   try {
     const evaluation = await evaluateChampionshipWithGemini(room);
 
-    // Do not overwrite a room that has somehow been removed.
     if (!rooms.has(room.code)) return;
 
     room.championship = evaluation;
@@ -1526,14 +1539,14 @@ app.post('/api/research', async (req, res) => {
     const characters = await getGenreCharacters(genre);
 
     res.json({
-      note: 'AI-generated entries should be reviewed for accuracy.',
+      note: 'Epic character lists contain warriors only. Other generated entries should be reviewed for accuracy.',
       count: characters.length,
       characters
     });
 
   } catch (error) {
     res.status(502).json({
-      error: 'Gemini character generation failed.',
+      error: 'Character generation failed.',
       detail: error.message
     });
   }
@@ -1744,19 +1757,16 @@ io.on('connection', socket => {
 
         socket.emit(
           'error:message',
-          `Not enough characters. You need ${requiredCharacters}, but only ${uniqueCharacters.length} unique characters were generated. Choose more genres or reduce the team size.`
+          `Not enough characters. You need ${requiredCharacters}, but only ${uniqueCharacters.length} unique characters are available. Choose more genres or reduce the team size.`
         );
 
         emitRoom(room);
         return;
       }
 
-      // Select exactly one character for every team slot.
       room.characters = shuffle(uniqueCharacters)
         .slice(0, requiredCharacters);
 
-      // Retrieve images only for selected characters.
-      // The auction does not need to wait for all 100 generated entries.
       await attachCharacterImages(room.characters);
 
       if (
@@ -1784,8 +1794,11 @@ io.on('connection', socket => {
       room.lastBidderId = null;
       room.currentTurnIndex = 0;
       room.currentTurnPlayerId = null;
+
+      // Host opens the first auction.
       room.openingPlayerId = room.hostId;
       room.nextOpeningPlayerId = room.hostId;
+
       room.turnDeadline = null;
       room.turnToken = 0;
       room.noIncreaseTurns = 0;
@@ -1843,25 +1856,27 @@ io.on('connection', socket => {
     room.noIncreaseTurns = 0;
     room.passedPlayerIds = new Set();
 
+    // First auction: host.
+    // Following auctions: previous auction winner.
     room.openingPlayerId =
       room.nextOpeningPlayerId || room.hostId;
 
-    const openingPlayer = findPlayer(room, room.openingPlayerId);
+    let openingPlayer = findPlayer(
+      room,
+      room.openingPlayerId
+    );
 
     if (
       !openingPlayer ||
       !openingPlayer.connected ||
       !canBid(openingPlayer, room)
     ) {
-      const eligible = room.players.find(player =>
-        canBid(player, room)
+      openingPlayer = room.players.find(player =>
+        player.connected && canBid(player, room)
       );
-
-      room.currentTurnPlayerId = eligible?.id || null;
-    } else {
-      room.currentTurnPlayerId = openingPlayer.id;
     }
 
+    room.currentTurnPlayerId = openingPlayer?.id || null;
     room.turnDeadline = null;
     room.status = 'auction';
 
@@ -1917,8 +1932,8 @@ io.on('connection', socket => {
     room.highestBidderId = player.id;
     room.lastBidderId = player.id;
 
-    // The latest bidder is no longer required to bid again.
-    // Everyone else gets one opportunity to respond.
+    // The bidder cannot immediately bid again.
+    // Other eligible players get a chance to respond.
     room.passedPlayerIds = new Set([player.id]);
     room.noIncreaseTurns = 0;
 
@@ -1932,7 +1947,6 @@ io.on('connection', socket => {
 
     room.turnDeadline = null;
 
-    // Find the next eligible player after the bidder.
     finishTurnCycle(room);
   });
 
@@ -2008,8 +2022,6 @@ io.on('connection', socket => {
 
           finishTurnCycle(room);
         } else {
-          // If the highest bidder disconnects, their bid cannot win.
-          // The remaining players can continue bidding.
           if (room.highestBidderId === socket.id) {
             room.highestBidderId = null;
             room.lastBidderId = null;
