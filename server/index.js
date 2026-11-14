@@ -29,65 +29,274 @@ const GENRES = [
   'Marvel', 'DC', 'Harry Potter', 'Anime'
 ];
 
-const SEED_CHARACTERS = [
-  {
-    id: 'marvel-spider-man', name: 'Spider-Man', universe: 'Marvel',
-    version: 'Earth-616', rating: 88,
-    abilities: ['Spider-sense', 'Agility', 'Web-slinging'],
-    strengths: ['Mobility', 'Reflexes', 'Improvisation'],
-    weaknesses: ['Human-level durability'],
-    description: 'Peter Parker is a brilliant hero with extraordinary agility and danger awareness.',
-    combatStyle: 'Fast, mobile and improvisational', sources: []
-  },
-  {
-    id: 'marvel-iron-man', name: 'Iron Man', universe: 'Marvel',
-    version: 'Earth-616', rating: 91,
-    abilities: ['Powered armour', 'Repulsors', 'Flight'],
-    strengths: ['Technology', 'Range', 'Adaptability'],
-    weaknesses: ['Armour dependence'],
-    description: 'Tony Stark is an inventor who uses advanced powered armour.',
-    combatStyle: 'Technology-driven ranged combat', sources: []
-  },
-  {
-    id: 'marvel-thor', name: 'Thor', universe: 'Marvel',
-    version: 'Earth-616', rating: 96,
-    abilities: ['Asgardian physiology', 'Mjolnir', 'Lightning'],
-    strengths: ['Durability', 'Strength', 'Energy projection'],
-    weaknesses: ['Version-dependent limits'],
-    description: 'Thor is an Asgardian warrior with immense strength.',
-    combatStyle: 'Powerful close combat and storm-based attacks', sources: []
-  },
-  {
-    id: 'dc-batman', name: 'Batman', universe: 'DC',
-    version: 'Main continuity', rating: 87,
-    abilities: ['Detective skills', 'Martial arts', 'Technology'],
-    strengths: ['Preparation', 'Strategy', 'Stealth'],
-    weaknesses: ['Human physiology'],
-    description: 'Bruce Wayne is a highly trained detective and strategist.',
-    combatStyle: 'Strategic and technical', sources: []
-  },
-  {
-    id: 'dc-superman', name: 'Superman', universe: 'DC',
-    version: 'Main continuity', rating: 98,
-    abilities: ['Flight', 'Super strength', 'Heat vision'],
-    strengths: ['Speed', 'Durability', 'Power'],
-    weaknesses: ['Continuity-dependent vulnerabilities'],
-    description: 'Clark Kent is a Kryptonian with exceptional strength and speed.',
-    combatStyle: 'High-power physical and ranged combat', sources: []
-  },
-  {
-    id: 'dc-wonder-woman', name: 'Wonder Woman', universe: 'DC',
-    version: 'Main continuity', rating: 94,
-    abilities: ['Amazonian abilities', 'Combat skill', 'Lasso'],
-    strengths: ['Combat', 'Durability', 'Leadership'],
-    weaknesses: ['Continuity-dependent limits'],
-    description: 'Diana is an Amazonian warrior known for her strength and combat experience.',
-    combatStyle: 'Disciplined close combat', sources: []
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const clone = value => JSON.parse(JSON.stringify(value));
+
+function shuffle(list) {
+  const a = [...list];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
   }
-];
+  return a;
+}
+
+function slugify(value) {
+  return String(value).toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function safeText(value, fallback = '') {
+  return String(value || fallback).trim().slice(0, 1000);
+}
+
+function cleanList(value) {
+  if (Array.isArray(value)) {
+    return value.map(x => String(x).trim()).filter(Boolean).slice(0, 12);
+  }
+  if (typeof value === 'string') {
+    return value.split(',').map(x => x.trim()).filter(Boolean).slice(0, 12);
+  }
+  return [];
+}
+
+function extractJSON(value) {
+  const cleaned = String(value || '')
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      return JSON.parse(cleaned.slice(start, end + 1));
+    }
+    throw new Error('Gemini returned invalid JSON.');
+  }
+}
+
+function roomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  return Array.from({ length: 6 }, () =>
+    chars[Math.floor(Math.random() * chars.length)]
+  ).join('');
+}
+
+function normalizeCharacter(raw, genre) {
+  if (!raw || typeof raw !== 'object' || !raw.name) return null;
+
+  const name = String(raw.name).trim().slice(0, 80);
+  const rating = Math.round(Number(raw.rating));
+
+  return {
+    id: `${slugify(genre)}-${slugify(name)}`,
+    name,
+    universe: genre,
+    version: String(raw.version || 'General version').slice(0, 100),
+    rating: Number.isFinite(rating) ? Math.max(1, Math.min(100, rating)) : 70,
+    abilities: cleanList(raw.abilities),
+    strengths: cleanList(raw.strengths),
+    weaknesses: cleanList(raw.weaknesses),
+    description: String(raw.description || '').slice(0, 500),
+    combatStyle: String(raw.combatStyle || 'Versatile').slice(0, 150),
+    sources: [],
+    imageUrl: null
+  };
+}
+
+function getGeminiModel() {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error('Gemini API key is missing. Add GEMINI_API_KEY in Render.');
+  }
+
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+  return genAI.getGenerativeModel({
+    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+    generationConfig: {
+      responseMimeType: 'application/json',
+      temperature: 0.3
+    }
+  });
+}
+
+async function generateWithRetry(model, prompt, label = 'Gemini') {
+  let lastError;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await model.generateContent(prompt);
+    } catch (error) {
+      lastError = error;
+      const message = String(error.message || '').toLowerCase();
+
+      const quotaExhausted =
+        message.includes('quota') ||
+        message.includes('resource_exhausted') ||
+        message.includes('billing') ||
+        message.includes('limit: 0') ||
+        message.includes('429');
+
+      if (quotaExhausted) {
+        throw new Error(
+          `${label}: Gemini quota is exhausted. Check Google AI Studio usage and billing.`
+        );
+      }
+
+      if (attempt < 3) {
+        const delay = attempt * 2500;
+        console.warn(`${label} attempt ${attempt} failed. Retrying in ${delay}ms.`);
+        await sleep(delay);
+      }
+    }
+  }
+
+  throw lastError || new Error(`${label} failed.`);
+}
 
 // --------------------------------------------------
-// CURATED EPIC CHARACTER DATABASES
+// PERMANENT MARVEL AND DC DATABASES
+// --------------------------------------------------
+
+function makeCharacter(genre, name, rating, abilities, strengths, weaknesses, description, style) {
+  return {
+    id: `${slugify(genre)}-${slugify(name)}`,
+    name,
+    universe: genre,
+    version: genre === 'Marvel' ? 'Marvel comics – general continuity' : 'DC comics – general continuity',
+    rating,
+    abilities,
+    strengths,
+    weaknesses,
+    description,
+    combatStyle: style,
+    sources: [],
+    imageUrl: null
+  };
+}
+
+const MARVEL_DATA = [
+  ['Spider-Man',88,['Spider-sense','Web-slinging','Agility'],['Reflexes','Mobility','Improvisation'],['Human-level durability'],'Peter Parker is a brilliant hero with extraordinary agility and danger awareness.','Fast and mobile'],
+  ['Iron Man',91,['Powered armour','Repulsors','Flight'],['Technology','Range','Adaptability'],['Armour dependence'],'Tony Stark is an inventor who uses advanced powered armour.','Technology-driven'],
+  ['Thor',96,['Asgardian physiology','Mjolnir','Lightning'],['Strength','Durability','Energy projection'],['Version-dependent limits'],'Thor is an Asgardian warrior with immense strength.','Powerful close combat'],
+  ['Captain America',88,['Super-soldier physiology','Shield mastery'],['Leadership','Tactics','Discipline'],['Limited ranged options'],'Steve Rogers is a super-soldier and experienced team leader.','Tactical and defensive'],
+  ['Hulk',97,['Gamma-powered strength','Durability'],['Strength','Resilience'],['Variable control'],'Bruce Banner transforms into the immensely strong Hulk.','High strength'],
+  ['Black Widow',82,['Espionage','Martial arts','Technology'],['Stealth','Strategy','Agility'],['Human physiology'],'Natasha Romanoff is a highly trained spy and strategist.','Stealth and technique'],
+  ['Hawkeye',82,['Archery','Precision','Tactics'],['Accuracy','Awareness'],['Human physiology'],'Clint Barton is an expert archer.','Long-range precision'],
+  ['Doctor Strange',97,['Mystic arts','Portals','Spell casting'],['Versatility','Knowledge','Magic'],['Concentration'],'Stephen Strange is a master of the mystic arts.','Mystical and versatile'],
+  ['Scarlet Witch',99,['Chaos magic','Energy manipulation'],['Reality manipulation','Power'],['Control varies by version'],'Wanda Maximoff is a powerful magic user.','Reality-altering magic'],
+  ['Vision',94,['Density control','Flight','Energy beam'],['Durability','Intelligence','Versatility'],['Specialized vulnerabilities'],'Vision is an android with advanced abilities.','Versatile energy combat'],
+  ['Black Panther',89,['Enhanced physiology','Vibranium suit'],['Strategy','Agility','Technology'],['Equipment dependence'],'T Challa is the technologically advanced king of Wakanda.','Agile and tactical'],
+  ['Captain Marvel',96,['Energy absorption','Flight','Super strength'],['Power','Speed','Durability'],['Power varies by version'],'Carol Danvers is a powerful cosmic hero.','Cosmic energy combat'],
+  ['Ant-Man',85,['Size manipulation','Technology'],['Infiltration','Adaptability'],['Suit dependence'],'Scott Lang uses technology to change size.','Size-based tactics'],
+  ['Wasp',85,['Size manipulation','Flight','Energy blasts'],['Agility','Precision'],['Suit dependence'],'Janet van Dyne is a founding Avenger.','Agile aerial combat'],
+  ['Falcon',83,['Flight suit','Aerial tactics'],['Mobility','Awareness'],['Equipment dependence'],'Sam Wilson is an expert aerial hero.','Aerial support'],
+  ['Winter Soldier',86,['Cybernetic arm','Marksmanship'],['Training','Strength','Tactics'],['Human-level limits'],'Bucky Barnes is a highly trained operative.','Tactical combat'],
+  ['Daredevil',85,['Enhanced senses','Martial arts'],['Awareness','Technique'],['Human physiology'],'Matt Murdock is a skilled blind lawyer and hero.','Close combat'],
+  ['Luke Cage',88,['Super strength','Unbreakable skin'],['Durability','Strength'],['Limited range'],'Luke Cage has extraordinary strength and durability.','Durable close combat'],
+  ['Iron Fist',87,['Chi mastery','Martial arts'],['Technique','Focus'],['Energy management'],'Danny Rand is a master martial artist.','Focused martial arts'],
+  ['Punisher',84,['Tactics','Marksmanship'],['Planning','Experience'],['Human physiology'],'Frank Castle is a highly trained tactician.','Strategic and ranged'],
+  ['Moon Knight',87,['Combat training','Equipment'],['Adaptability','Determination'],['Version-dependent abilities'],'Marc Spector is a complex hero with combat expertise.','Unpredictable tactics'],
+  ['Shang-Chi',89,['Martial arts','Ten Rings in some versions'],['Technique','Agility'],['Power depends on version'],'Shang-Chi is a master martial artist.','Martial arts'],
+  ['She-Hulk',91,['Super strength','Durability'],['Strength','Intelligence'],['Power varies by version'],'Jennifer Walters combines intelligence with superhuman abilities.','Powerful and versatile'],
+  ['Wolverine',94,['Regeneration','Adamantium claws'],['Resilience','Senses','Combat experience'],['Magnetism-related vulnerability'],'Logan has a powerful healing factor and enhanced senses.','Close combat'],
+  ['Deadpool',91,['Regeneration','Combat skills'],['Resilience','Improvisation'],['Unpredictability'],'Wade Wilson is known for regeneration and unconventional tactics.','Unpredictable'],
+  ['Storm',94,['Weather manipulation','Flight'],['Area control','Range'],['Environmental dependence'],'Ororo Munroe can control weather.','Weather-based control'],
+  ['Cyclops',88,['Optic blasts','Tactical leadership'],['Precision','Leadership'],['Needs control visor'],'Scott Summers is a tactical leader with optic energy beams.','Ranged precision'],
+  ['Jean Grey',97,['Telepathy','Telekinesis'],['Mental abilities','Versatility'],['Power varies by version'],'Jean Grey is a powerful telepath and telekinetic.','Psychic abilities'],
+  ['Beast',86,['Enhanced strength','Intelligence'],['Science','Agility'],['Limited ranged abilities'],'Hank McCoy combines scientific brilliance with enhanced physical abilities.','Intelligent and agile'],
+  ['Rogue',91,['Power absorption','Flight in some versions'],['Adaptability','Strength'],['Touch-related limitations'],'Rogue can absorb powers and memories through touch.','Power adaptation'],
+  ['Gambit',87,['Kinetic energy charging','Staff combat'],['Agility','Ranged attacks'],['Energy control limits'],'Remy LeBeau charges objects with kinetic energy.','Agile ranged combat'],
+  ['Nightcrawler',88,['Teleportation','Agility'],['Mobility','Stealth'],['Teleportation limits'],'Kurt Wagner is a highly agile teleporter.','Teleportation'],
+  ['Colossus',91,['Organic steel form','Strength'],['Durability','Strength'],['Reduced agility in metal form'],'Piotr Rasputin can transform his body into organic steel.','Durable strength'],
+  ['Magneto',98,['Magnetism control','Force fields'],['Area control','Power'],['Non-metallic threats'],'Erik Lehnsherr controls magnetic fields.','Magnetic control'],
+  ['Professor X',95,['Telepathy','Mental communication'],['Strategy','Mental abilities'],['Physical limitations'],'Charles Xavier is a powerful telepath and leader.','Psychic strategy'],
+  ['Mystique',85,['Shapeshifting','Espionage'],['Infiltration','Deception'],['Limited direct power'],'Mystique can change her appearance.','Disguise and infiltration'],
+  ['Apocalypse',98,['Molecular control','Super strength'],['Adaptability','Durability'],['Version-dependent limits'],'Apocalypse is an ancient mutant with extensive abilities.','Adaptive power'],
+  ['Thanos',99,['Titan physiology','Cosmic knowledge'],['Strength','Durability','Strategy'],['Version-dependent equipment'],'Thanos is an immensely powerful Titan.','Cosmic strength'],
+  ['Loki',94,['Magic','Illusions','Shapeshifting'],['Deception','Versatility'],['Magic limitations'],'Loki is a skilled sorcerer and trickster.','Illusion and magic'],
+  ['Ultron',95,['Artificial intelligence','Robotic body','Energy weapons'],['Adaptability','Technology'],['Technology vulnerabilities'],'Ultron is an advanced artificial intelligence.','Technological'],
+  ['Green Goblin',88,['Enhanced strength','Glider','Technology'],['Mobility','Technology'],['Unstable judgement'],'Norman Osborn uses advanced equipment and enhanced abilities.','Aerial technology'],
+  ['Doctor Doom',98,['Science','Magic','Armour'],['Intelligence','Preparation','Versatility'],['Ego'],'Victor von Doom is a brilliant scientist and sorcerer.','Science and magic'],
+  ['Venom',93,['Symbiote abilities','Strength','Regeneration'],['Adaptability','Strength'],['Symbiote-specific weaknesses'],'Venom is a powerful symbiote character.','Adaptive close combat'],
+  ['Carnage',94,['Symbiote abilities','Shapeshifting'],['Adaptability','Power'],['Symbiote-specific weaknesses'],'Carnage is a dangerous symbiote with changing forms.','Unpredictable'],
+  ['Star-Lord',85,['Technology','Marksmanship','Leadership'],['Tactics','Mobility'],['Equipment dependence'],'Peter Quill is a space adventurer and team leader.','Ranged and tactical'],
+  ['Gamora',88,['Enhanced abilities','Swordsmanship'],['Agility','Technique'],['Limited ranged options'],'Gamora is a highly trained warrior.','Precise close combat'],
+  ['Drax',87,['Strength','Durability'],['Resilience','Strength'],['Limited versatility'],'Drax is a powerful Guardian of the Galaxy.','Direct strength'],
+  ['Rocket Raccoon',86,['Engineering','Weapons expertise'],['Technology','Improvisation'],['Small stature'],'Rocket is an inventive engineer and strategist.','Technology and tactics'],
+  ['Groot',88,['Plant manipulation','Regeneration'],['Resilience','Adaptability'],['Growth-dependent limits'],'Groot is a tree-like hero with regenerative abilities.','Defensive and adaptive'],
+  ['Silver Surfer',99,['Cosmic power','Flight','Energy manipulation'],['Speed','Power','Versatility'],['Cosmic responsibilities'],'The Silver Surfer wields the Power Cosmic.','Cosmic energy'],
+  ['Ghost Rider',97,['Supernatural abilities','Hellfire','Regeneration'],['Resilience','Supernatural power'],['Supernatural rules vary'],'Ghost Rider is a supernatural antihero.','Supernatural']
+];
+
+const DC_DATA = [
+  ['Batman',87,['Detective skills','Martial arts','Technology'],['Preparation','Strategy','Stealth'],['Human physiology'],'Bruce Wayne is a highly trained detective and strategist.','Strategic'],
+  ['Superman',98,['Flight','Super strength','Heat vision'],['Speed','Durability','Power'],['Continuity-dependent vulnerabilities'],'Clark Kent is a Kryptonian with exceptional strength and speed.','High-power'],
+  ['Wonder Woman',94,['Amazonian abilities','Combat skill','Lasso'],['Combat','Durability','Leadership'],['Continuity-dependent limits'],'Diana is an Amazonian warrior.','Disciplined close combat'],
+  ['Flash',97,['Super speed','Time-related abilities'],['Speed','Reflexes'],['Speed Force rules vary'],'Barry Allen is a speedster hero.','High speed'],
+  ['Aquaman',91,['Atlantean physiology','Ocean communication'],['Strength','Durability','Leadership'],['Environment-dependent advantages'],'Arthur Curry is the king of Atlantis.','Aquatic strength'],
+  ['Green Lantern',96,['Power ring','Energy constructs'],['Versatility','Willpower'],['Ring charge and focus'],'Hal Jordan uses a power ring to create energy constructs.','Energy constructs'],
+  ['Cyborg',91,['Cybernetics','Technology interface'],['Technology','Adaptability'],['System vulnerabilities'],'Victor Stone is a hero with advanced cybernetic abilities.','Technological'],
+  ['Shazam',94,['Magic','Flight','Strength'],['Power','Durability'],['Magic-related rules'],'Billy Batson transforms into a powerful champion.','Magical strength'],
+  ['Martian Manhunter',97,['Telepathy','Shapeshifting','Flight'],['Versatility','Mental abilities'],['Fire vulnerability in many versions'],'Jonn Jonzz is a powerful Martian hero.','Versatile'],
+  ['Green Arrow',84,['Archery','Tactics'],['Precision','Planning'],['Human physiology'],'Oliver Queen is an expert archer.','Ranged precision'],
+  ['Supergirl',96,['Kryptonian abilities','Flight'],['Strength','Speed','Durability'],['Continuity-dependent vulnerabilities'],'Kara Zor-El has Kryptonian abilities.','High-power'],
+  ['Nightwing',87,['Acrobatics','Martial arts'],['Agility','Leadership'],['Human physiology'],'Dick Grayson is an expert acrobat and tactician.','Agile'],
+  ['Red Hood',87,['Combat training','Technology'],['Tactics','Experience'],['Human physiology'],'Jason Todd is a highly trained vigilante.','Tactical'],
+  ['Batgirl',85,['Martial arts','Technology','Detective skills'],['Intelligence','Agility'],['Human physiology'],'Barbara Gordon is a skilled hero and detective.','Technical'],
+  ['Robin',82,['Martial arts','Acrobatics'],['Agility','Training'],['Human physiology'],'Robin is a trained young hero.','Agile'],
+  ['Raven',95,['Magic','Empathy','Energy manipulation'],['Magic','Versatility'],['Emotional control'],'Raven is a powerful empath and magic user.','Mystical'],
+  ['Starfire',93,['Energy projection','Flight','Strength'],['Power','Mobility'],['Power varies by version'],'Koriand r is a powerful alien hero.','Energy combat'],
+  ['Beast Boy',87,['Animal transformation'],['Adaptability','Versatility'],['Form-dependent limits'],'Garfield Logan can transform into animals.','Adaptive'],
+  ['Blue Beetle',90,['Alien scarab armour','Energy weapons'],['Technology','Adaptability'],['Scarab control'],'Jaime Reyes uses an advanced alien scarab.','Armoured technology'],
+  ['Booster Gold',85,['Future technology','Force field'],['Technology','Mobility'],['Equipment dependence'],'Booster Gold uses technology from the future.','Technology'],
+  ['Zatanna',95,['Magic','Spell casting'],['Versatility','Creativity'],['Concentration'],'Zatanna is a powerful stage magician and sorcerer.','Magic'],
+  ['John Constantine',88,['Occult knowledge','Magic'],['Deception','Knowledge'],['Human durability'],'John Constantine is an expert in the occult.','Mystical strategy'],
+  ['Doctor Fate',97,['Nabu magic','Cosmic awareness'],['Magic','Knowledge'],['Host and helmet limitations'],'Doctor Fate is a powerful magical champion.','Cosmic magic'],
+  ['Black Adam',96,['Magic','Flight','Strength'],['Power','Durability'],['Magic-related limits'],'Black Adam possesses extraordinary magical powers.','High strength'],
+  ['Lex Luthor',90,['Technology','Intelligence','Armour'],['Strategy','Science'],['Human physiology'],'Lex Luthor is a brilliant scientist and strategist.','Technology and planning'],
+  ['Joker',83,['Planning','Psychology'],['Unpredictability','Deception'],['Human physiology'],'The Joker is an unpredictable criminal mastermind.','Psychological tactics'],
+  ['Harley Quinn',84,['Acrobatics','Combat training'],['Agility','Improvisation'],['Human physiology'],'Harley Quinn is agile and unpredictable.','Acrobatic'],
+  ['Deathstroke',91,['Enhanced physiology','Tactics','Weapons expertise'],['Strategy','Training'],['Human limitations'],'Slade Wilson is an expert tactician.','Strategic combat'],
+  ['Bane',89,['Strength enhancement','Strategy'],['Strength','Planning'],['Enhancement dependence'],'Bane combines strength with strategic intelligence.','Power and tactics'],
+  ['Darkseid',100,['Omega Effect','New God physiology'],['Power','Durability','Cosmic influence'],['Version-dependent limits'],'Darkseid is a powerful New God.','Cosmic power'],
+  ['Doomsday',99,['Adaptation','Super strength'],['Durability','Strength'],['Adaptation varies'],'Doomsday is known for extraordinary adaptation.','Overwhelming strength'],
+  ['Brainiac',97,['Advanced intellect','Technology'],['Intelligence','Technology'],['Technology vulnerabilities'],'Brainiac is a highly advanced artificial intelligence.','Strategic technology'],
+  ['Reverse-Flash',97,['Super speed','Time manipulation'],['Speed','Knowledge'],['Speed Force rules'],'Eobard Thawne is a powerful speedster.','High speed'],
+  ['Black Manta',87,['Armour','Technology','Underwater combat'],['Technology','Tactics'],['Equipment dependence'],'Black Manta is an advanced underwater combatant.','Armoured'],
+  ['Sinestro',95,['Power ring','Energy constructs'],['Willpower','Strategy'],['Ring dependence'],'Sinestro wields a powerful energy ring.','Energy constructs'],
+  ['Hawkman',90,['Flight','Nth metal','Combat training'],['Experience','Mobility'],['Equipment dependence'],'Hawkman is an experienced warrior.','Aerial combat'],
+  ['Hawkgirl',90,['Flight','Nth metal','Combat training'],['Agility','Experience'],['Equipment dependence'],'Hawkgirl is a skilled aerial warrior.','Aerial combat'],
+  ['Plastic Man',92,['Elasticity','Shapeshifting'],['Adaptability','Resilience'],['Power limitations vary'],'Plastic Man can reshape his body.','Adaptive'],
+  ['Firestorm',96,['Matter manipulation','Energy control'],['Versatility','Power'],['Coordination requirements'],'Firestorm can manipulate matter and energy.','Energy and matter control'],
+  ['Blue Devil',86,['Supernatural strength','Trident'],['Strength','Durability'],['Supernatural limitations'],'Blue Devil has supernatural abilities.','Supernatural'],
+  ['The Atom',86,['Size manipulation','Science'],['Precision','Intelligence'],['Technology dependence'],'The Atom can change his size.','Size-based strategy'],
+  ['Vixen',89,['Animal ability mimicry'],['Adaptability','Versatility'],['Totem dependence'],'Vixen can access animal abilities.','Adaptive'],
+  ['Static',88,['Electromagnetism','Flight'],['Energy control','Mobility'],['Power control limits'],'Static controls electromagnetic energy.','Energy control'],
+  ['Superboy',93,['Kryptonian abilities','Telekinesis in some versions'],['Strength','Adaptability'],['Version-dependent abilities'],'Superboy has powers derived from Kryptonian heritage.','High-power'],
+  ['Power Girl',95,['Kryptonian abilities','Flight'],['Strength','Durability'],['Continuity-dependent vulnerabilities'],'Power Girl is a powerful Kryptonian hero.','High-power'],
+  ['Mister Miracle',88,['Escape artistry','Technology'],['Ingenuity','Adaptability'],['Human limits'],'Mister Miracle is a master escape artist.','Ingenuity'],
+  ['Big Barda',94,['New God physiology','Mega-Rod'],['Strength','Combat experience'],['Equipment dependence'],'Big Barda is a powerful New God warrior.','Powerful close combat'],
+  ['Orion',96,['New God physiology','Astro-Harness'],['Strength','Durability'],['Temperamental nature'],'Orion is a powerful New God warrior.','Cosmic strength'],
+  ['Etrigan',94,['Demonic abilities','Magic'],['Strength','Magic'],['Supernatural rules'],'Etrigan is a powerful supernatural being.','Supernatural'],
+  ['Ras al Ghul',87,['Martial arts','Strategy','Lazarus Pit'],['Planning','Experience'],['Human limitations'],'Ra al Ghul is an experienced strategist and fighter.','Strategic']
+];
+
+function makePermanentPool(genre, data) {
+  return data.map(([name, rating, abilities, strengths, weaknesses, description, style]) =>
+    makeCharacter(genre, name, rating, abilities, strengths, weaknesses, description, style)
+  );
+}
+
+const MARVEL_CHARACTERS = makePermanentPool('Marvel', MARVEL_DATA);
+const DC_CHARACTERS = makePermanentPool('DC', DC_DATA);
+
+// --------------------------------------------------
+// RAMAYANA AND MAHABHARATA DATABASES
 // --------------------------------------------------
 
 const EPIC_CHARACTERS = {
@@ -177,141 +386,102 @@ const EPIC_CHARACTERS = {
   ]
 };
 
+function makeEpicSeedCharacters(genre) {
+  return EPIC_CHARACTERS[genre].map(([name, rating, description]) =>
+    makeCharacter(
+      genre,
+      name,
+      rating,
+      ['Traditional epic combat abilities', 'Warfare and strategy'],
+      ['Experience', 'Courage', 'Combat skill'],
+      ['Depends on the version and interpretation'],
+      description,
+      'Traditional epic warrior'
+    )
+  );
+}
+
 // --------------------------------------------------
-// GENERAL HELPERS
+// CHARACTER DATABASE ACCESS
 // --------------------------------------------------
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
-function shuffle(list) {
-  const array = [...list];
-  for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [array[i], array[j]] = [array[j], array[i]];
+async function generateGenreCharacters(genre) {
+  if (genre === 'Marvel') return clone(MARVEL_CHARACTERS);
+  if (genre === 'DC') return clone(DC_CHARACTERS);
+  if (genre === 'Ramayana' || genre === 'Mahabharata') {
+    return makeEpicSeedCharacters(genre);
   }
-  return array;
-}
 
-function slugify(value) {
-  return String(value).toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-}
-
-function safeText(value, fallback = '') {
-  return String(value || fallback).trim().slice(0, 1000);
-}
-
-function cleanList(value) {
-  if (Array.isArray(value)) {
-    return value.map(x => String(x).trim()).filter(Boolean).slice(0, 12);
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error(`Gemini API key is required to generate ${genre} characters.`);
   }
-  if (typeof value === 'string') {
-    return value.split(',').map(x => x.trim()).filter(Boolean).slice(0, 12);
+
+  const generated = [];
+  const seen = new Set();
+  const model = getGeminiModel();
+
+  for (let batch = 0; batch < 5 && generated.length < 100; batch++) {
+    const count = Math.min(20, 100 - generated.length);
+    const existingNames = generated.map(c => c.name).join(', ');
+
+    const prompt = `
+Generate ${count} established and distinct characters from "${genre}".
+Do not repeat: ${existingNames}
+Use established characters only. Do not invent characters.
+For Football and Cricket, use real established players.
+For Harry Potter and Anime, use established characters from their respective works.
+Return JSON only:
+{
+ "characters": [
+  {
+   "name":"Name","version":"Version","rating":85,
+   "abilities":["Ability"],"strengths":["Strength"],
+   "weaknesses":["Weakness"],"description":"Description",
+   "combatStyle":"Style"
   }
-  return [];
+ ]
+}`;
+
+    const result = await generateWithRetry(model, prompt, `${genre} batch ${batch + 1}`);
+    const parsed = extractJSON(result.response.text());
+    const entries = Array.isArray(parsed.characters) ? parsed.characters : [];
+
+    for (const raw of entries) {
+      const character = normalizeCharacter(raw, genre);
+      if (!character) continue;
+
+      const key = slugify(character.name);
+      if (seen.has(key)) continue;
+
+      seen.add(key);
+      generated.push(character);
+    }
+
+    if (!entries.length) break;
+  }
+
+  if (generated.length < 10) {
+    throw new Error(`${genre} produced only ${generated.length} characters.`);
+  }
+
+  return generated.slice(0, 100);
 }
 
-function extractJSON(value) {
-  const cleaned = String(value || '')
-    .replace(/```json/gi, '')
-    .replace(/```/g, '')
-    .trim();
+async function getGenreCharacters(genre) {
+  if (!GENRES.includes(genre)) throw new Error(`Unsupported genre: ${genre}`);
+
+  if (genreCache.has(genre)) return genreCache.get(genre);
+
+  const promise = generateGenreCharacters(genre);
 
   try {
-    return JSON.parse(cleaned);
-  } catch {
-    const start = cleaned.indexOf('{');
-    const end = cleaned.lastIndexOf('}');
-    if (start >= 0 && end > start) {
-      return JSON.parse(cleaned.slice(start, end + 1));
-    }
-    throw new Error('Gemini returned invalid JSON.');
+    const characters = await promise;
+    genreCache.set(genre, Promise.resolve(characters));
+    return characters;
+  } catch (error) {
+    genreCache.delete(genre);
+    throw error;
   }
-}
-
-function normalizeCharacter(raw, genre) {
-  if (!raw || typeof raw !== 'object') return null;
-
-  const name = String(raw.name || '').trim().slice(0, 80);
-  if (!name) return null;
-
-  const rating = Math.round(Number(raw.rating));
-
-  return {
-    id: `${slugify(genre)}-${slugify(name)}`,
-    name,
-    universe: genre,
-    version: String(raw.version || 'General version').slice(0, 100),
-    rating: Number.isFinite(rating) ? Math.max(1, Math.min(100, rating)) : 70,
-    abilities: cleanList(raw.abilities),
-    strengths: cleanList(raw.strengths),
-    weaknesses: cleanList(raw.weaknesses),
-    description: String(raw.description || '').slice(0, 500),
-    combatStyle: String(raw.combatStyle || 'Versatile').slice(0, 150),
-    sources: [],
-    imageUrl: null
-  };
-}
-
-function roomCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  return Array.from({ length: 6 }, () =>
-    chars[Math.floor(Math.random() * chars.length)]
-  ).join('');
-}
-
-function getGeminiModel() {
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error('Gemini API key is missing. Add GEMINI_API_KEY in Render.');
-  }
-
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
-  return genAI.getGenerativeModel({
-    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-    generationConfig: {
-      responseMimeType: 'application/json',
-      temperature: 0.3
-    }
-  });
-}
-
-// Retries temporary errors. A hard quota exhaustion cannot be fixed by retrying.
-async function generateWithRetry(model, prompt, label = 'Gemini') {
-  let lastError;
-
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      return await model.generateContent(prompt);
-    } catch (error) {
-      lastError = error;
-      const message = String(error.message || '').toLowerCase();
-
-      const quotaExhausted =
-        message.includes('quota exceeded') ||
-        message.includes('billing') ||
-        message.includes('limit: 0');
-
-      if (quotaExhausted) {
-        throw new Error(
-          `${label}: Gemini API quota is exhausted. Check Google AI Studio usage and billing.`
-        );
-      }
-
-      if (attempt === 3) break;
-
-      const delay = attempt * 2500;
-      console.warn(`${label} attempt ${attempt} failed. Retrying in ${delay}ms.`);
-      await sleep(delay);
-    }
-  }
-
-  throw lastError || new Error(`${label} failed.`);
 }
 
 // --------------------------------------------------
@@ -320,7 +490,6 @@ async function generateWithRetry(model, prompt, label = 'Gemini') {
 
 async function getWikipediaImage(character) {
   const cacheKey = `${character.universe}:${character.name}`.toLowerCase();
-
   if (imageCache.has(cacheKey)) return imageCache.get(cacheKey);
 
   const promise = (async () => {
@@ -364,165 +533,20 @@ async function getWikipediaImage(character) {
 }
 
 async function attachCharacterImages(room) {
-  const characters = room.characters;
   let nextIndex = 0;
-  const workerCount = Math.min(5, characters.length);
+  const workerCount = Math.min(5, room.characters.length);
 
   async function worker() {
-    while (nextIndex < characters.length) {
+    while (nextIndex < room.characters.length) {
       const index = nextIndex++;
-      characters[index].imageUrl = await getWikipediaImage(characters[index]);
+      room.characters[index].imageUrl =
+        await getWikipediaImage(room.characters[index]);
     }
   }
 
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
   if (rooms.has(room.code)) emitRoom(room);
-}
-
-// --------------------------------------------------
-// CHARACTER GENERATION
-// --------------------------------------------------
-
-function makeEpicSeedCharacters(genre) {
-  return (EPIC_CHARACTERS[genre] || []).map(([name, rating, description]) => ({
-    id: `${slugify(genre)}-${slugify(name)}`,
-    name,
-    universe: genre,
-    version: 'Traditional epic',
-    rating,
-    abilities: ['Traditional epic combat abilities', 'Warfare and strategy'],
-    strengths: ['Experience', 'Courage', 'Combat skill'],
-    weaknesses: ['Depends on the version and interpretation'],
-    description,
-    combatStyle: 'Traditional epic warrior',
-    sources: [],
-    imageUrl: null
-  }));
-}
-
-async function generateGenreCharacters(genre) {
-  if (genre === 'Ramayana' || genre === 'Mahabharata') {
-    return makeEpicSeedCharacters(genre);
-  }
-
-  const generated = [];
-  const seen = new Set();
-
-  function addCharacter(character) {
-    if (!character) return;
-
-    const key = String(character.name || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, '');
-
-    if (!key || seen.has(key)) return;
-    seen.add(key);
-    generated.push(character);
-  }
-
-  SEED_CHARACTERS
-    .filter(item => item.universe === genre)
-    .forEach(item => addCharacter(clone(item)));
-
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error(`A Gemini API key is required to generate ${genre} characters.`);
-  }
-
-  const model = getGeminiModel();
-
-  // Five smaller batches reduce response size and improve reliability.
-  for (let batch = 0; batch < 5 && generated.length < 100; batch++) {
-    const count = Math.min(20, 100 - generated.length);
-    const existingNames = generated.map(c => c.name).join(', ');
-
-    const prompt = `
-Generate ${count} additional established and distinct characters from "${genre}".
-
-Do not repeat these names: ${existingNames}
-
-Use established characters only. Do not invent characters.
-For Football and Cricket, use real established players.
-For Marvel and DC, use established comic-book characters.
-For Harry Potter, use established characters from the books and films.
-For Anime, use established characters from anime series.
-
-Return JSON only:
-{
-  "characters": [
-    {
-      "name": "Character name",
-      "version": "Series or version",
-      "rating": 85,
-      "abilities": ["Ability 1"],
-      "strengths": ["Strength 1"],
-      "weaknesses": ["Weakness 1"],
-      "description": "Short description",
-      "combatStyle": "Style"
-    }
-  ]
-}`;
-
-    try {
-      const result = await generateWithRetry(
-        model,
-        prompt,
-        `${genre} character batch ${batch + 1}`
-      );
-
-      const parsed = extractJSON(result.response.text());
-      const entries = Array.isArray(parsed.characters) ? parsed.characters : [];
-
-      for (const raw of entries) {
-        addCharacter(normalizeCharacter(raw, genre));
-        if (generated.length >= 100) break;
-      }
-
-      if (!entries.length) {
-        console.warn(`${genre}: Gemini returned an empty batch.`);
-        break;
-      }
-    } catch (error) {
-      console.warn(`${genre} generation stopped:`, error.message);
-      break;
-    }
-  }
-
-  console.log(`${genre}: ${generated.length} unique characters available`);
-
-  if (generated.length < 10) {
-    throw new Error(
-      `${genre} produced only ${generated.length} characters. Check Gemini quota or select another genre.`
-    );
-  }
-
-  return generated.slice(0, 100);
-}
-
-async function getGenreCharacters(genre) {
-  if (!GENRES.includes(genre)) {
-    throw new Error(`Unsupported genre: ${genre}`);
-  }
-
-  if (genreCache.has(genre)) return genreCache.get(genre);
-
-  const promise = generateGenreCharacters(genre);
-
-  try {
-    const characters = await promise;
-
-    // Cache curated epic pools and complete generated pools only.
-    const isEpic = genre === 'Ramayana' || genre === 'Mahabharata';
-    if (isEpic || characters.length >= 100) {
-      genreCache.set(genre, Promise.resolve(characters));
-    }
-
-    // Partial pools are deliberately not cached. A later attempt can retry.
-    return characters;
-  } catch (error) {
-    genreCache.delete(genre);
-    throw error;
-  }
 }
 
 // --------------------------------------------------
@@ -573,7 +597,6 @@ function publicRoom(room, viewerId) {
 
 function emitRoom(room) {
   room.stateVersion = (room.stateVersion || 0) + 1;
-
   for (const player of room.players) {
     io.to(player.id).emit('room:update', publicRoom(room, player.id));
   }
@@ -668,9 +691,7 @@ function beginTurn(room) {
     !room.passedPlayerIds.has(currentPlayer.id) &&
     canBid(currentPlayer, room);
 
-  if (!eligible) {
-    currentPlayer = getNextEligiblePlayer(room, room.currentTurnPlayerId);
-  }
+  if (!eligible) currentPlayer = getNextEligiblePlayer(room, room.currentTurnPlayerId);
 
   if (!currentPlayer) {
     resolveAuction(room);
@@ -688,11 +709,9 @@ function beginTurn(room) {
 
   const timer = setTimeout(() => {
     const currentRoom = rooms.get(room.code);
-
     if (!currentRoom || currentRoom.status !== 'auction') return;
     if (currentRoom.turnToken !== token) return;
     if (currentRoom.turnDeadline !== deadline) return;
-
     passTurn(currentRoom, 'TIMEOUT');
   }, room.settings.turnSeconds * 1000 + 100);
 
@@ -708,7 +727,6 @@ function passTurn(room, reason = 'SKIP') {
   if (player) room.passedPlayerIds.add(player.id);
 
   room.noIncreaseTurns = room.passedPlayerIds.size;
-
   room.auctionLog.push({
     type: reason,
     playerId: player?.id || null,
@@ -755,7 +773,6 @@ function resolveAuction(room) {
 
   if (!awarded) {
     room.reserveCharacters.push(character);
-
     room.results.push({
       characterId: character.id,
       characterName: character.name,
@@ -796,23 +813,17 @@ function resolveAuction(room) {
 }
 
 // --------------------------------------------------
-// FREE CHARACTER ALLOCATION AND TEAM REVEAL
+// FREE CHARACTER ALLOCATION
 // --------------------------------------------------
 
 function completeAuction(room) {
-  if (
-    room.status !== 'auction_ready' &&
-    room.status !== 'auction'
-  ) return;
+  if (room.status !== 'auction_ready' && room.status !== 'auction') return;
 
   stopTimer(room.code);
 
   const emptySlots = [];
-
   for (const player of room.players) {
-    while (player.team.length < room.settings.teamSize) {
-      emptySlots.push(player);
-    }
+    while (player.team.length < room.settings.teamSize) emptySlots.push(player);
   }
 
   const assignedIds = new Set(
@@ -857,7 +868,6 @@ function completeAuction(room) {
 
   const timer = setTimeout(() => {
     const currentRoom = rooms.get(room.code);
-
     if (!currentRoom || currentRoom.status !== 'team_reveal') return;
 
     currentRoom.status = 'ready_for_fight';
@@ -880,13 +890,8 @@ function calculateTeamStrength(team) {
     0
   );
 
-  const strengths = new Set(
-    team.flatMap(character => character.strengths || [])
-  );
-
-  const abilities = new Set(
-    team.flatMap(character => character.abilities || [])
-  );
+  const strengths = new Set(team.flatMap(character => character.strengths || []));
+  const abilities = new Set(team.flatMap(character => character.abilities || []));
 
   const synergy = Math.min(
     5,
@@ -895,19 +900,6 @@ function calculateTeamStrength(team) {
 
   return Math.max(0, Math.min(100, Math.round(ratings / team.length + synergy)));
 }
-
-/*
-  OPTION C - COMBINED CHAMPIONSHIP
-
-  70% = normalized head-to-head match points
-  30% = overall team evaluation score
-
-  A win = 3 match points
-  A draw = 1 match point
-  A loss = 0 match points
-
-  Maximum possible match points = 3 x (number of opponents).
-*/
 
 function calculateStandings(room, matches, evaluations = []) {
   const evaluationMap = new Map(
@@ -940,10 +932,8 @@ function calculateStandings(room, matches, evaluations = []) {
     );
 
     const normalizedMatchScore = (points / maxMatchPoints) * 100;
-
     const combinedScore = Math.round(
-      normalizedMatchScore * 0.70 +
-      teamEvaluationScore * 0.30
+      normalizedMatchScore * 0.70 + teamEvaluationScore * 0.30
     );
 
     return {
@@ -990,7 +980,6 @@ function calculateStandings(room, matches, evaluations = []) {
     ].join(':');
 
     if (key !== previousKey) rank = index + 1;
-
     standing.rank = rank;
     previousKey = key;
   });
@@ -999,7 +988,7 @@ function calculateStandings(room, matches, evaluations = []) {
 }
 
 // --------------------------------------------------
-// LOCAL CHARACTER ANALYSIS FOR EACH MATCHUP
+// LOCAL FALLBACK CHARACTER ANALYSIS
 // --------------------------------------------------
 
 function buildCharacterAnalysis(team, opponentTeam) {
@@ -1011,23 +1000,21 @@ function buildCharacterAnalysis(team, opponentTeam) {
 
     const disadvantages = (character.weaknesses || []).slice(0, 5);
 
-    const opponentMatchups = opponentTeam.slice(0, 5).map(opponent => ({
-      opponentName: opponent.name,
-      advantage: advantages[0]
-        ? `${character.name} may benefit from ${advantages[0]}.`
-        : 'No specific advantage was supplied in the character data.',
-      disadvantage: disadvantages[0]
-        ? `${character.name} has the listed limitation: ${disadvantages[0]}.`
-        : 'No specific weakness was supplied in the character data.',
-      impact: `This is a character-data-based comparison with ${opponent.name}, not a guaranteed outcome.`
-    }));
-
     return {
       characterName: character.name,
-      opponentMatchups,
+      opponentMatchups: opponentTeam.map(opponent => ({
+        opponentName: opponent.name,
+        advantage: advantages[0]
+          ? `${character.name} may benefit from ${advantages[0]}.`
+          : 'No specific advantage was supplied.',
+        disadvantage: disadvantages[0]
+          ? `${character.name} has the listed limitation: ${disadvantages[0]}.`
+          : 'No specific weakness was supplied.',
+        impact: `Provisional profile-based comparison with ${opponent.name}.`
+      })),
       advantages: advantages.length ? advantages : ['No specific advantage supplied.'],
       disadvantages: disadvantages.length ? disadvantages : ['No specific weakness supplied.'],
-      impact: character.description || 'Contribution based on the supplied character profile.',
+      impact: character.description || 'Contribution based on the character profile.',
       tacticalRole: character.combatStyle || 'Role not specified.'
     };
   });
@@ -1080,48 +1067,242 @@ function createFallbackChampionship(room, errorMessage) {
   const evaluations = room.players.map(player => ({
     playerId: player.id,
     score: calculateTeamStrength(player.team),
-    summary: 'Provisional team evaluation based on character ratings and available team attributes.',
+    summary: 'Provisional evaluation based on character ratings and team attributes.',
     strengths: [],
     weaknesses: [],
     synergy: 'Fallback calculation; detailed Gemini analysis was unavailable.',
-    balance: 'Based on the available character ratings.',
+    balance: 'Based on available character ratings.',
     vulnerabilities: [],
     keyContributions: [],
     rankingRationale: 'Provisional ranking using the combined scoring formula.'
   }));
 
-  const standings = calculateStandings(room, matches, evaluations);
-
   return {
     matches,
-    standings,
+    standings: calculateStandings(room, matches, evaluations),
     totalMatches: matches.length,
     completedAt: Date.now(),
     overallSummary:
       'Gemini could not complete the detailed evaluation. These are provisional results based on character ratings and team attributes.',
     rankingExplanation:
-      'The combined formula is still applied, but the team-evaluation component uses the fallback rating calculation.',
+      'The combined formula is applied, but the team-evaluation component uses the fallback calculation.',
     aiEvaluation: {
       provider: 'Gemini',
       status: 'unavailable',
-      message: safeText(
-        errorMessage,
-        'Gemini evaluation failed. Check the server logs and API configuration.'
-      )
+      message: safeText(errorMessage, 'Gemini evaluation failed.')
     },
     rankingRules: [
-      'Combined score = 70% normalized head-to-head match points + 30% overall team evaluation.',
+      'Combined score = 70% normalized head-to-head match points + 30% team evaluation.',
       'Match win: 3 points',
       'Match draw: 1 point',
       'Match loss: 0 points',
       'Tiebreakers: combined score, match points, wins, score difference, team evaluation score.',
-      'Fallback team evaluation is based on character ratings and team attributes.'
+      'Fallback team evaluation uses character ratings and team attributes.'
     ]
   };
 }
 
 // --------------------------------------------------
-// GEMINI CHAMPIONSHIP EVALUATION
+// AI TEAM EVALUATION
+// --------------------------------------------------
+
+async function evaluateTeamsWithGemini(model, teams) {
+  const prompt = `
+You are a neutral judge for a fictional and sporting team-building championship.
+
+Evaluate every team using only the supplied information.
+Consider team composition, role diversity, balance, strengths, weaknesses and synergy.
+Do not invent abilities or achievements.
+For fictional characters, keep analysis non-graphic and focused on fictional abilities and strategy.
+Do not automatically favour famous characters.
+Scores must be integers from 1 to 100.
+Return every team exactly once.
+
+Return JSON only:
+{
+ "teams":[
+  {
+   "playerId":"EXACT_ID",
+   "score":90,
+   "summary":"Short team evaluation",
+   "strengths":["Strength"],
+   "weaknesses":["Weakness"],
+   "synergy":"Team synergy",
+   "balance":"Team balance",
+   "vulnerabilities":["Vulnerability"],
+   "keyContributions":[
+    {"characterName":"Exact character name","contribution":"Specific contribution"}
+   ],
+   "rankingRationale":"Reason for score"
+  }
+ ]
+}
+
+TEAMS:
+${JSON.stringify(teams)}
+`;
+
+  const result = await generateWithRetry(model, prompt, 'Team evaluation');
+  const parsed = extractJSON(result.response.text());
+
+  if (!Array.isArray(parsed.teams) || parsed.teams.length !== teams.length) {
+    throw new Error('Gemini did not evaluate every team.');
+  }
+
+  const validIds = new Set(teams.map(team => team.playerId));
+  const seen = new Set();
+
+  return parsed.teams.map(entry => {
+    if (!validIds.has(entry.playerId) || seen.has(entry.playerId)) {
+      throw new Error('Gemini returned an invalid or duplicate team evaluation.');
+    }
+
+    seen.add(entry.playerId);
+
+    const score = Number(entry.score);
+    if (!Number.isFinite(score)) throw new Error('Invalid team evaluation score.');
+
+    return {
+      playerId: entry.playerId,
+      score: Math.max(1, Math.min(100, Math.round(score))),
+      summary: safeText(entry.summary),
+      strengths: cleanList(entry.strengths),
+      weaknesses: cleanList(entry.weaknesses),
+      synergy: safeText(entry.synergy),
+      balance: safeText(entry.balance),
+      vulnerabilities: cleanList(entry.vulnerabilities),
+      keyContributions: Array.isArray(entry.keyContributions)
+        ? entry.keyContributions.slice(0, 20).map(item => ({
+            characterName: safeText(item.characterName, 'Team member'),
+            contribution: safeText(item.contribution, 'Not specified')
+          }))
+        : [],
+      rankingRationale: safeText(entry.rankingRationale)
+    };
+  });
+}
+
+// --------------------------------------------------
+// AI HEAD-TO-HEAD MATCHUPS IN BATCHES
+// --------------------------------------------------
+
+async function evaluateMatchupBatch(model, batch) {
+  const prompt = `
+You are a neutral judge comparing teams in a fictional and sporting team-building championship.
+
+Evaluate every matchup in this batch.
+Use only the supplied character information.
+Do not invent powers, skills, achievements or weaknesses.
+Consider team balance, role diversity, synergy and how each character contributes against the opposing team.
+Include individual character contribution analysis for BOTH teams.
+For fictional characters, keep the analysis non-graphic and focused on abilities and strategy.
+For Football and Cricket, focus on sporting ability, roles and team balance.
+Scores must be integers from 1 to 100.
+A higher score wins. Equal scores mean a draw.
+Return every matchup exactly once.
+
+Return JSON only:
+{
+ "matchups":[
+  {
+   "teamAId":"EXACT_ID",
+   "teamBId":"EXACT_ID",
+   "scoreA":85,
+   "scoreB":80,
+   "explanation":"Why these scores were given",
+   "teamAAnalysis":[
+    {
+     "characterName":"Exact character name",
+     "advantages":["Specific advantage against this opponent"],
+     "disadvantages":["Relevant limitation"],
+     "impact":"What this character contributes in this matchup",
+     "tacticalRole":"Role in this matchup",
+     "opponentMatchups":[
+      {
+       "opponentName":"Exact opposing character",
+       "advantage":"Specific matchup advantage",
+       "disadvantage":"Specific matchup limitation",
+       "impact":"Short matchup assessment"
+      }
+     ]
+    }
+   ],
+   "teamBAnalysis":[
+    {
+     "characterName":"Exact character name",
+     "advantages":["Specific advantage"],
+     "disadvantages":["Relevant limitation"],
+     "impact":"Contribution",
+     "tacticalRole":"Role",
+     "opponentMatchups":[
+      {
+       "opponentName":"Exact opposing character",
+       "advantage":"Specific advantage",
+       "disadvantage":"Specific limitation",
+       "impact":"Short matchup assessment"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
+
+MATCHUPS:
+${JSON.stringify(batch)}
+`;
+
+  const result = await generateWithRetry(model, prompt, 'Matchup batch');
+  const parsed = extractJSON(result.response.text());
+
+  if (!Array.isArray(parsed.matchups) || parsed.matchups.length !== batch.length) {
+    throw new Error('Gemini returned an incomplete matchup batch.');
+  }
+
+  return parsed.matchups;
+}
+
+function sanitizeCharacterAnalysis(entries, team, opponentTeam) {
+  const teamNames = new Set(team.map(character => character.name));
+  const opponentNames = new Set(opponentTeam.map(character => character.name));
+
+  if (!Array.isArray(entries)) {
+    return buildCharacterAnalysis(team, opponentTeam);
+  }
+
+  const byName = new Map();
+
+  for (const entry of entries) {
+    if (!teamNames.has(entry.characterName)) continue;
+
+    const opponentMatchups = Array.isArray(entry.opponentMatchups)
+      ? entry.opponentMatchups
+          .filter(item => opponentNames.has(item.opponentName))
+          .map(item => ({
+            opponentName: safeText(item.opponentName),
+            advantage: safeText(item.advantage),
+            disadvantage: safeText(item.disadvantage),
+            impact: safeText(item.impact)
+          }))
+      : [];
+
+    byName.set(entry.characterName, {
+      characterName: entry.characterName,
+      opponentMatchups,
+      advantages: cleanList(entry.advantages),
+      disadvantages: cleanList(entry.disadvantages),
+      impact: safeText(entry.impact),
+      tacticalRole: safeText(entry.tacticalRole)
+    });
+  }
+
+  return team.map(character =>
+    byName.get(character.name) || buildCharacterAnalysis([character], opponentTeam)[0]
+  );
+}
+
+// --------------------------------------------------
+// COMPLETE GEMINI CHAMPIONSHIP
 // --------------------------------------------------
 
 async function evaluateChampionshipWithGemini(room) {
@@ -1143,221 +1324,129 @@ async function evaluateChampionshipWithGemini(room) {
     }))
   }));
 
-  const expectedPairs = [];
+  // First request: one overall evaluation for each team.
+  const evaluations = await evaluateTeamsWithGemini(model, teams);
+  const evaluationMap = new Map(
+    evaluations.map(evaluation => [evaluation.playerId, evaluation])
+  );
+
+  // Prepare every unique pair of teams.
+  const allPairs = [];
 
   for (let i = 0; i < teams.length; i++) {
     for (let j = i + 1; j < teams.length; j++) {
-      expectedPairs.push({
+      allPairs.push({
+        teamA: teams[i],
+        teamB: teams[j],
         teamAId: teams[i].playerId,
         teamBId: teams[j].playerId
       });
     }
   }
 
-  // Compact response: Gemini evaluates teams and pair scores.
-  // Character-by-character matchup details are then constructed from supplied data.
-  const prompt = `
-You are a neutral judge for a fictional and sporting team-building championship.
-
-Evaluate all supplied teams and every required head-to-head pair.
-
-Rules:
-- Use only supplied character information.
-- Do not invent abilities, achievements, equipment or weaknesses.
-- Ratings are supporting information, not the only deciding factor.
-- Consider team composition, balance, role diversity, strengths, weaknesses and synergy.
-- For Football and Cricket, judge sporting skills, positions and team balance.
-- For fictional characters, keep the evaluation non-graphic and focused on fictional abilities and strategy.
-- Do not automatically favour famous characters.
-- Scores must be integers from 1 to 100.
-- Matchup winner must match the higher score. Use null for a draw.
-- Return every team exactly once and every requested matchup exactly once.
-
-Return JSON only:
-{
-  "overallSummary": "Short championship summary",
-  "teams": [
-    {
-      "playerId": "EXACT_ID",
-      "score": 90,
-      "summary": "Team summary",
-      "strengths": ["Strength"],
-      "weaknesses": ["Weakness"],
-      "synergy": "Synergy explanation",
-      "balance": "Balance explanation",
-      "vulnerabilities": ["Vulnerability"],
-      "keyContributions": [
-        {"characterName": "Exact character name", "contribution": "Contribution"}
-      ],
-      "rankingRationale": "Why this team received this evaluation"
-    }
-  ],
-  "matchups": [
-    {
-      "teamAId": "EXACT_ID",
-      "teamBId": "EXACT_ID",
-      "scoreA": 85,
-      "scoreB": 80,
-      "winnerId": "EXACT_ID or null",
-      "explanation": "Short matchup explanation"
-    }
-  ]
-}
-
-TEAMS:
-${JSON.stringify(teams)}
-
-REQUIRED PAIRS:
-${JSON.stringify(expectedPairs)}
-`;
-
-  const result = await generateWithRetry(
-    model,
-    prompt,
-    'Championship evaluation'
-  );
-
-  const parsed = extractJSON(result.response.text());
-
-  if (!Array.isArray(parsed.teams) || !Array.isArray(parsed.matchups)) {
-    throw new Error('Gemini returned an incomplete championship evaluation.');
+  // Five team matchups per request keeps responses more manageable.
+  const batches = [];
+  for (let i = 0; i < allPairs.length; i += 5) {
+    batches.push(allPairs.slice(i, i + 5));
   }
 
-  const validIds = new Set(room.players.map(p => p.id));
-  const evaluationMap = new Map();
+  const allMatches = [];
 
-  for (const entry of parsed.teams) {
-    if (!validIds.has(entry.playerId) || evaluationMap.has(entry.playerId)) {
-      throw new Error('Gemini returned an unknown or duplicate team evaluation.');
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+    const batch = batches[batchIndex];
+
+    const requestData = batch.map(pair => ({
+      teamAId: pair.teamAId,
+      teamBId: pair.teamBId,
+      teamA: pair.teamA,
+      teamB: pair.teamB
+    }));
+
+    const returned = await evaluateMatchupBatch(model, requestData);
+
+    for (const entry of returned) {
+      const pair = batch.find(p =>
+        p.teamAId === entry.teamAId && p.teamBId === entry.teamBId
+      );
+
+      if (!pair) throw new Error('Gemini returned an unexpected matchup.');
+
+      const scoreA = Number(entry.scoreA);
+      const scoreB = Number(entry.scoreB);
+
+      if (!Number.isFinite(scoreA) || !Number.isFinite(scoreB)) {
+        throw new Error('Gemini returned invalid matchup scores.');
+      }
+
+      const cleanScoreA = Math.max(1, Math.min(100, Math.round(scoreA)));
+      const cleanScoreB = Math.max(1, Math.min(100, Math.round(scoreB)));
+
+      let winnerId = null;
+      let result = 'DRAW';
+
+      if (cleanScoreA > cleanScoreB) {
+        winnerId = pair.teamAId;
+        result = 'TEAM_A_WINS';
+      } else if (cleanScoreB > cleanScoreA) {
+        winnerId = pair.teamBId;
+        result = 'TEAM_B_WINS';
+      }
+
+      const playerA = findPlayer(room, pair.teamAId);
+      const playerB = findPlayer(room, pair.teamBId);
+
+      allMatches.push({
+        teamAId: pair.teamAId,
+        teamAName: playerA.name,
+        teamBId: pair.teamBId,
+        teamBName: playerB.name,
+        scoreA: cleanScoreA,
+        scoreB: cleanScoreB,
+        winnerId,
+        result,
+        explanation: safeText(
+          entry.explanation,
+          `${playerA.name}: ${cleanScoreA}/100. ${playerB.name}: ${cleanScoreB}/100.`
+        ),
+        teamAAnalysis: sanitizeCharacterAnalysis(
+          entry.teamAAnalysis,
+          playerA.team,
+          playerB.team
+        ),
+        teamBAnalysis: sanitizeCharacterAnalysis(
+          entry.teamBAnalysis,
+          playerB.team,
+          playerA.team
+        ),
+        analysisStatus: 'complete'
+      });
     }
 
-    const score = Number(entry.score);
-    if (!Number.isFinite(score)) {
-      throw new Error('Gemini returned an invalid team score.');
-    }
-
-    const player = findPlayer(room, entry.playerId);
-
-    const contributions = Array.isArray(entry.keyContributions)
-      ? entry.keyContributions.slice(0, 20).map(item => ({
-          characterName: safeText(item.characterName, 'Team member'),
-          contribution: safeText(item.contribution, 'Contribution not specified.')
-        }))
-      : [];
-
-    evaluationMap.set(entry.playerId, {
-      playerId: entry.playerId,
-      score: Math.max(1, Math.min(100, Math.round(score))),
-      summary: safeText(entry.summary, 'Team evaluated by Gemini.'),
-      strengths: cleanList(entry.strengths),
-      weaknesses: cleanList(entry.weaknesses),
-      synergy: safeText(entry.synergy),
-      balance: safeText(entry.balance),
-      vulnerabilities: cleanList(entry.vulnerabilities),
-      keyContributions: contributions,
-      rankingRationale: safeText(entry.rankingRationale),
-      team: player.team
-    });
+    console.log(
+      `Gemini matchup batch ${batchIndex + 1}/${batches.length} completed`
+    );
   }
 
-  if (evaluationMap.size !== room.players.length) {
-    throw new Error('Gemini did not evaluate every player exactly once.');
-  }
-
-  const expectedSet = new Set(
-    expectedPairs.map(pair =>
-      [pair.teamAId, pair.teamBId].sort().join('|')
-    )
-  );
-
-  const actualSet = new Set();
-  const matches = [];
-
-  for (const entry of parsed.matchups) {
-    const aId = entry.teamAId;
-    const bId = entry.teamBId;
-
-    if (!validIds.has(aId) || !validIds.has(bId) || aId === bId) {
-      throw new Error('Gemini returned an invalid matchup.');
-    }
-
-    const key = [aId, bId].sort().join('|');
-
-    if (!expectedSet.has(key) || actualSet.has(key)) {
-      throw new Error('Gemini returned a duplicate or unexpected matchup.');
-    }
-
-    actualSet.add(key);
-
-    const scoreA = Number(entry.scoreA);
-    const scoreB = Number(entry.scoreB);
-
-    if (!Number.isFinite(scoreA) || !Number.isFinite(scoreB)) {
-      throw new Error('Gemini returned invalid matchup scores.');
-    }
-
-    const cleanScoreA = Math.max(1, Math.min(100, Math.round(scoreA)));
-    const cleanScoreB = Math.max(1, Math.min(100, Math.round(scoreB)));
-
-    let winnerId = null;
-    let result = 'DRAW';
-
-    if (cleanScoreA > cleanScoreB) {
-      winnerId = aId;
-      result = 'TEAM_A_WINS';
-    } else if (cleanScoreB > cleanScoreA) {
-      winnerId = bId;
-      result = 'TEAM_B_WINS';
-    }
-
-    const playerA = findPlayer(room, aId);
-    const playerB = findPlayer(room, bId);
-
-    matches.push({
-      teamAId: aId,
-      teamAName: playerA.name,
-      teamBId: bId,
-      teamBName: playerB.name,
-      scoreA: cleanScoreA,
-      scoreB: cleanScoreB,
-      winnerId,
-      result,
-      explanation: safeText(
-        entry.explanation,
-        `${playerA.name}: ${cleanScoreA}/100. ${playerB.name}: ${cleanScoreB}/100.`
-      ),
-      teamAAnalysis: buildCharacterAnalysis(playerA.team, playerB.team),
-      teamBAnalysis: buildCharacterAnalysis(playerB.team, playerA.team),
-      analysisStatus: 'complete'
-    });
-  }
-
-  if (actualSet.size !== expectedSet.size) {
+  if (allMatches.length !== allPairs.length) {
     throw new Error('Gemini did not evaluate every head-to-head matchup.');
   }
 
-  const evaluations = room.players.map(player =>
-    evaluationMap.get(player.id)
-  );
-
-  const standings = calculateStandings(room, matches, evaluations);
+  const standings = calculateStandings(room, allMatches, evaluations);
 
   return {
-    matches,
+    matches: allMatches,
     standings,
-    totalMatches: matches.length,
+    totalMatches: allMatches.length,
     completedAt: Date.now(),
-    overallSummary: safeText(
-      parsed.overallSummary,
-      'The championship has been evaluated.'
-    ),
+    overallSummary:
+      'Gemini evaluated every team and every head-to-head matchup, including individual character contributions.',
     rankingExplanation:
       'Final ranking combines 70% normalized head-to-head match points and 30% Gemini overall team evaluation.',
     aiEvaluation: {
       provider: 'Gemini',
       status: 'complete',
       message:
-        'Gemini evaluated every team and every head-to-head matchup. Character-level matchup details are generated from the supplied character profiles.'
+        `Gemini evaluated ${teams.length} teams and ${allMatches.length} head-to-head matchups in ${batches.length + 1} requests. Character contributions and opposing-character matchups were AI evaluated.`
     },
     rankingRules: [
       '70% of the final score comes from normalized head-to-head match points.',
@@ -1384,7 +1473,6 @@ async function startChampionship(room) {
   if (incompletePlayer) return;
 
   room.status = 'championship';
-
   room.championship = {
     matches: [],
     standings: [],
@@ -1392,7 +1480,7 @@ async function startChampionship(room) {
     completedAt: null,
     overallSummary: 'Evaluating every team and matchup...',
     rankingExplanation:
-      'The final ranking will combine head-to-head results and overall team evaluation.',
+      'The final ranking combines head-to-head results and overall team evaluation.',
     aiEvaluation: {
       provider: 'Gemini',
       status: 'evaluating',
@@ -1405,16 +1493,13 @@ async function startChampionship(room) {
 
   try {
     const evaluation = await evaluateChampionshipWithGemini(room);
-
     if (!rooms.has(room.code)) return;
 
     room.championship = evaluation;
     emitRoom(room);
-
     console.log(`Championship completed for room ${room.code}`);
   } catch (error) {
     console.error('Gemini championship evaluation failed:', error);
-
     if (!rooms.has(room.code)) return;
 
     room.championship = createFallbackChampionship(room, error.message);
@@ -1454,22 +1539,19 @@ app.post('/api/research', async (req, res) => {
   const genre = String(req.body?.universe || '').trim();
 
   if (!GENRES.includes(genre)) {
-    return res.status(400).json({
-      error: 'Choose one of the supported genres.'
-    });
+    return res.status(400).json({ error: 'Choose a supported genre.' });
   }
 
   try {
     const characters = await getGenreCharacters(genre);
-
     res.json({
-      note: 'Epic character lists are curated. Other generated entries should be reviewed for accuracy.',
+      note: 'Marvel, DC, Ramayana and Mahabharata use permanent curated databases. Other genres use Gemini-generated pools.',
       count: characters.length,
       characters
     });
   } catch (error) {
     res.status(502).json({
-      error: 'Character generation failed.',
+      error: 'Character database loading failed.',
       detail: error.message
     });
   }
@@ -1535,7 +1617,6 @@ io.on('connection', socket => {
 
     rooms.set(code, room);
     socket.join(code);
-
     socket.emit('room:created', publicRoom(room, socket.id));
     emitRoom(room);
   });
@@ -1562,12 +1643,11 @@ io.on('connection', socket => {
 
     room.players.push(player);
     socket.join(room.code);
-
     socket.emit('room:joined', publicRoom(room, socket.id));
     emitRoom(room);
   });
 
-  // START GAME AND GENERATE CHARACTER POOL
+  // START GAME
   socket.on('room:start', async ({
     universes,
     teamSize,
@@ -1575,7 +1655,6 @@ io.on('connection', socket => {
     startingBid
   } = {}) => {
     const room = [...rooms.values()].find(r => r.hostId === socket.id);
-
     if (!room || room.status !== 'lobby') return;
 
     if (room.players.length < 2) {
@@ -1615,13 +1694,13 @@ io.on('connection', socket => {
     }
 
     const needsGemini = selectedGenres.some(
-      genre => genre !== 'Ramayana' && genre !== 'Mahabharata'
+      genre => !['Ramayana', 'Mahabharata', 'Marvel', 'DC'].includes(genre)
     );
 
     if (needsGemini && !process.env.GEMINI_API_KEY) {
       return socket.emit(
         'error:message',
-        'A Gemini API key is required for the selected genre. Ramayana and Mahabharata can be played without Gemini.'
+        'A Gemini API key is required for Football, Cricket, Harry Potter or Anime. The four curated universes do not require Gemini to load.'
       );
     }
 
@@ -1650,12 +1729,10 @@ io.on('connection', socket => {
 
       if (uniqueCharacters.length < requiredCharacters) {
         room.status = 'lobby';
-
         socket.emit(
           'error:message',
           `Not enough characters. You need ${requiredCharacters}, but only ${uniqueCharacters.length} unique characters are available. Choose more genres or reduce team size.`
         );
-
         emitRoom(room);
         return;
       }
@@ -1695,19 +1772,17 @@ io.on('connection', socket => {
 
       emitRoom(room);
 
-      // Images load in the background. They no longer block the auction.
       attachCharacterImages(room).catch(error => {
         console.warn('Background image loading failed:', error.message);
       });
 
     } catch (error) {
-      console.error('Character generation failed:', error);
-
+      console.error('Character database loading failed:', error);
       room.status = 'lobby';
 
       socket.emit(
         'error:message',
-        `Character generation failed: ${error.message}`
+        `Character database loading failed: ${error.message}`
       );
 
       emitRoom(room);
@@ -1717,7 +1792,6 @@ io.on('connection', socket => {
   // HOST DEPLOYS NEXT RANDOM CHARACTER
   socket.on('auction:next-character', () => {
     const room = [...rooms.values()].find(r => r.hostId === socket.id);
-
     if (!isHost(room, socket)) return;
 
     if (room.status !== 'auction_ready') {
@@ -1735,7 +1809,6 @@ io.on('connection', socket => {
     room.lastBidderId = null;
     room.noIncreaseTurns = 0;
     room.passedPlayerIds = new Set();
-
     room.openingPlayerId = room.nextOpeningPlayerId || room.hostId;
 
     let openingPlayer = findPlayer(room, room.openingPlayerId);
@@ -1819,17 +1892,13 @@ io.on('connection', socket => {
     passTurn(room, 'SKIP');
   });
 
-  // HOST STARTS TEAM COMPARISON
+  // HOST STARTS CHAMPIONSHIP
   socket.on('championship:start', async () => {
     const room = [...rooms.values()].find(r => r.hostId === socket.id);
-
     if (!isHost(room, socket)) return;
 
     if (room.status !== 'ready_for_fight') {
-      return socket.emit(
-        'error:message',
-        'The teams are not ready for the championship.'
-      );
+      return socket.emit('error:message', 'The teams are not ready for the championship.');
     }
 
     const incompletePlayer = room.players.find(
@@ -1885,7 +1954,6 @@ io.on('connection', socket => {
 
 app.use(express.static(path.join(__dirname, '..', 'dist')));
 
-// RegExp route works with both Express 4 and Express 5.
 app.get(/.*/, (req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
 
