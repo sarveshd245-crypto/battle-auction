@@ -351,88 +351,229 @@ async function attachCharacterImages(characters) {
 // GEMINI CHARACTER GENERATION
 // --------------------------------------------------
 
-async function generateGenreCharacters(genre) {
-  const model = getGeminiModel();
+// --------------------------------------------------
+// GEMINI CHARACTER GENERATION — IMPROVED VERSION
+// --------------------------------------------------
 
+// Reliable built-in characters for the two Indian epics.
+// These are used whenever Gemini returns too few characters
+// or its API request fails.
+
+const EPIC_CHARACTERS = {
+  Ramayana: [
+    ['Rama', 98, 'Prince of Ayodhya and central figure of the Ramayana'],
+    ['Sita', 94, 'Princess of Mithila and wife of Rama'],
+    ['Hanuman', 99, 'Devoted follower of Rama with extraordinary abilities'],
+    ['Lakshmana', 92, 'Brother of Rama and devoted warrior'],
+    ['Bharata', 88, 'Brother of Rama known for loyalty and duty'],
+    ['Shatrughna', 85, 'Youngest brother of Rama'],
+    ['Ravana', 97, 'King of Lanka, powerful scholar and warrior'],
+    ['Kumbhakarna', 93, 'Brother of Ravana known for immense strength'],
+    ['Indrajit', 95, 'Son of Ravana and formidable warrior'],
+    ['Vibhishana', 87, 'Brother of Ravana who supported Rama'],
+    ['Sugriva', 86, 'King of the Vanaras and ally of Rama'],
+    ['Vali', 94, 'Powerful Vanara king'],
+    ['Angada', 88, 'Son of Vali and warrior in Rama’s army'],
+    ['Jambavan', 90, 'Wise bear king and experienced warrior'],
+    ['Jatayu', 84, 'Noble bird who tried to protect Sita'],
+    ['Garuda', 97, 'Divine eagle and vehicle of Vishnu'],
+    ['Dasharatha', 86, 'King of Ayodhya and father of Rama'],
+    ['Kaikeyi', 75, 'Queen of Ayodhya and mother of Bharata'],
+    ['Kaushalya', 78, 'Mother of Rama'],
+    ['Sumitra', 78, 'Mother of Lakshmana and Shatrughna'],
+    ['Urmila', 78, 'Wife of Lakshmana'],
+    ['Mandodari', 82, 'Queen of Lanka and wife of Ravana'],
+    ['Surpanakha', 77, 'Sister of Ravana'],
+    ['Maricha', 84, 'Rakshasa associated with the golden deer'],
+    ['Subahu', 80, 'Rakshasa who opposed Rama'],
+    ['Tataka', 82, 'Powerful Rakshasi defeated by Rama'],
+    ['Ahalya', 75, 'Figure associated with the story of Rama'],
+    ['Vishwamitra', 94, 'Sage who trained and guided Rama'],
+    ['Vashishtha', 91, 'Royal sage of Ayodhya'],
+    ['Agastya', 92, 'Great sage who advised Rama'],
+    ['Shabari', 78, 'Devoted follower of Rama'],
+    ['Nala', 87, 'Vanara engineer who helped build the bridge'],
+    ['Nila', 85, 'Vanara commander and builder'],
+    ['Malyavan', 78, 'Elder adviser in Ravana’s court'],
+    ['Prahasta', 86, 'Commander of Ravana’s army']
+  ],
+
+  Mahabharata: [
+    ['Krishna', 100, 'Guide and strategist of the Pandavas'],
+    ['Arjuna', 98, 'Exceptional archer and warrior'],
+    ['Karna', 97, 'Legendary warrior known for generosity and skill'],
+    ['Bhishma', 98, 'Grand commander of the Kaurava army'],
+    ['Drona', 96, 'Master teacher of warfare and archery'],
+    ['Ashwatthama', 94, 'Son of Drona and powerful warrior'],
+    ['Bhima', 96, 'Pandava known for immense physical strength'],
+    ['Yudhishthira', 91, 'Eldest Pandava known for commitment to dharma'],
+    ['Nakula', 88, 'Pandava skilled in swordsmanship and horse care'],
+    ['Sahadeva', 89, 'Pandava known for intelligence and knowledge'],
+    ['Duryodhana', 95, 'Leader of the Kauravas'],
+    ['Dushasana', 87, 'Brother of Duryodhana'],
+    ['Shakuni', 89, 'Strategist and maternal uncle of the Kauravas'],
+    ['Abhimanyu', 94, 'Son of Arjuna and skilled young warrior'],
+    ['Ghatotkacha', 93, 'Son of Bhima with powerful abilities'],
+    ['Draupadi', 90, 'Queen and wife of the five Pandavas'],
+    ['Kunti', 88, 'Mother of the Pandavas'],
+    ['Gandhari', 85, 'Queen of Hastinapura and mother of the Kauravas'],
+    ['Vidura', 88, 'Wise adviser of the Kuru kingdom'],
+    ['Dhritarashtra', 82, 'King of Hastinapura'],
+    ['Sanjaya', 82, 'Narrator of the Kurukshetra war to Dhritarashtra'],
+    ['Balarama', 96, 'Elder brother of Krishna and master of the mace'],
+    ['Satyaki', 91, 'Yadava warrior allied with the Pandavas'],
+    ['Kripacharya', 91, 'Warrior and teacher who fought in the war'],
+    ['Shikhandi', 86, 'Warrior who played a key role against Bhishma'],
+    ['Dhrishtadyumna', 90, 'Commander of the Pandava army'],
+    ['Ganga', 94, 'Divine river goddess and mother of Bhishma'],
+    ['Parashurama', 99, 'Legendary warrior sage and teacher'],
+    ['Ekalavya', 91, 'Archer renowned for dedication and skill'],
+    ['Jayadratha', 87, 'King who fought on the Kaurava side'],
+    ['Barbarika', 98, 'Legendary warrior associated with the Mahabharata tradition'],
+    ['Uttara Kumara', 82, 'Prince of Matsya who fought alongside Arjuna'],
+    ['Virata', 84, 'King of Matsya'],
+    ['Drupada', 88, 'King of Panchala and father of Draupadi'],
+    ['Pandu', 84, 'Father of the Pandavas'],
+    ['Subhadra', 86, 'Sister of Krishna and mother of Abhimanyu'],
+    ['Ulupi', 85, 'Naga princess and wife of Arjuna'],
+    ['Chitrangada', 84, 'Princess of Manipura and wife of Arjuna'],
+    ['Ganga Putra Devavrata', 94, 'Another name associated with Bhishma'],
+    ['Somadatta', 83, 'Kuru-side warrior'],
+    ['Bhagadatta', 90, 'King of Pragjyotisha and elephant warrior']
+  ]
+};
+
+function makeEpicSeedCharacters(genre) {
+  const entries = EPIC_CHARACTERS[genre] || [];
+
+  return entries.map(([name, rating, description]) => ({
+    id: `${slugify(genre)}-${slugify(name)}`,
+    name,
+    universe: genre,
+    version: 'Traditional epic',
+    rating,
+    abilities: ['Traditional epic abilities', 'Warfare and strategy'],
+    strengths: ['Experience', 'Courage', 'Special abilities'],
+    weaknesses: ['Depends on the version and interpretation'],
+    description,
+    combatStyle: 'Traditional epic warrior or character',
+    sources: [],
+    imageUrl: null
+  }));
+}
+
+async function generateGenreCharacters(genre) {
+  // Start with reliable built-in entries.
   const generated = [];
   const seen = new Set();
 
-  for (let batch = 0; batch < 4; batch++) {
-    const remaining = 100 - generated.length;
-    if (remaining <= 0) break;
+  function addCharacter(character) {
+    if (!character) return;
 
-    const count = Math.min(25, remaining);
+    const key = String(character.name || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '');
 
-    const prompt = `
-Create up to ${count} distinct established entries for "${genre}".
+    if (!key || seen.has(key)) return;
 
-Rules:
-- Ramayana and Mahabharata: established figures from the epic traditions.
-- Football and Cricket: real established players.
-- Marvel and DC: established characters from those universes.
-- Harry Potter: established characters from that universe.
-- Anime: established characters from well-known anime series.
+    seen.add(key);
+    generated.push(character);
+  }
+
+  // Add epic characters before requesting Gemini.
+  // This guarantees that Ramayana and Mahabharata
+  // have a useful base pool even if Gemini fails.
+  for (const character of makeEpicSeedCharacters(genre)) {
+    addCharacter(character);
+  }
+
+  // Add existing seed characters.
+  for (const character of SEED_CHARACTERS.filter(
+    item => item.universe === genre
+  )) {
+    addCharacter(clone(character));
+  }
+
+  // Request additional characters from Gemini.
+  // Smaller batches are more reliable than asking for 100 at once.
+  if (process.env.GEMINI_API_KEY) {
+    try {
+      const model = getGeminiModel();
+
+      for (let batch = 0; batch < 6; batch++) {
+        if (generated.length >= 100) break;
+
+        const count = Math.min(20, 100 - generated.length);
+
+        const existingNames = generated
+          .map(character => character.name)
+          .join(', ');
+
+        const prompt = `
+Generate ${count} additional established and distinct characters
+from "${genre}".
+
+IMPORTANT:
+- Do not repeat any character in this existing list:
+${existingNames}
 - Do not invent characters.
-- Do not repeat characters.
-- Ratings are subjective game ratings from 1 to 100.
-- Keep descriptions concise.
-- Return fewer entries if necessary.
+- Use well-known and established characters.
+- For Ramayana and Mahabharata, use figures from traditional epic literature.
+- For Marvel and DC, use established comic-book characters.
+- For Harry Potter, use established characters from the books and films.
+- For Anime, use established characters from anime series.
+- For Football and Cricket, use real established players.
+- Keep descriptions short.
+- Return as many valid distinct entries as possible.
 
 Return JSON only:
 {
   "characters": [
     {
-      "name": "Name",
-      "version": "Version, series, team or era",
+      "name": "Character name",
+      "version": "Series, era or traditional version",
       "rating": 85,
       "abilities": ["Ability 1", "Ability 2"],
       "strengths": ["Strength 1", "Strength 2"],
       "weaknesses": ["Weakness 1"],
       "description": "Short description",
-      "combatStyle": "Playing or combat style"
+      "combatStyle": "Style"
     }
   ]
 }
 `;
 
-    try {
-      const result = await model.generateContent(prompt);
-      const parsed = extractJSON(result.response.text());
+        try {
+          const result = await model.generateContent(prompt);
+          const parsed = extractJSON(result.response.text());
 
-      const entries = Array.isArray(parsed.characters)
-        ? parsed.characters
-        : [];
+          const entries = Array.isArray(parsed.characters)
+            ? parsed.characters
+            : [];
 
-      for (const raw of entries) {
-        const character = normalizeCharacter(raw, genre);
-        if (!character) continue;
+          for (const raw of entries) {
+            addCharacter(normalizeCharacter(raw, genre));
 
-        const key = character.name.toLowerCase();
-        if (seen.has(key)) continue;
-
-        seen.add(key);
-        generated.push(character);
-
-        if (generated.length >= 100) break;
+            if (generated.length >= 100) break;
+          }
+        } catch (error) {
+          console.warn(
+            `Gemini batch ${batch + 1} failed for ${genre}:`,
+            error.message
+          );
+        }
       }
     } catch (error) {
       console.warn(
-        `Character batch ${batch + 1} failed for ${genre}:`,
+        `Gemini unavailable for ${genre}:`,
         error.message
       );
     }
   }
 
-  for (const seed of SEED_CHARACTERS.filter(
-    character => character.universe === genre
-  )) {
-    const key = seed.name.toLowerCase();
-
-    if (!seen.has(key) && generated.length < 100) {
-      seen.add(key);
-      generated.push(clone(seed));
-    }
-  }
+  console.log(
+    `${genre}: ${generated.length} unique characters available`
+  );
 
   return generated.slice(0, 100);
 }
@@ -456,7 +597,6 @@ async function getGenreCharacters(genre) {
     throw error;
   }
 }
-
 // --------------------------------------------------
 // ROOM DATA AND PRIVATE TEAM VISIBILITY
 // --------------------------------------------------
