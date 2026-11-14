@@ -1,3 +1,4 @@
+
 import { io } from 'socket.io-client';
 import './style.css';
 
@@ -13,6 +14,17 @@ let timerInterval;
 
 const root = document.querySelector('#root');
 
+const GENRES = [
+  'Ramayana',
+  'Mahabharata',
+  'Football',
+  'Cricket',
+  'Marvel',
+  'DC',
+  'Harry Potter',
+  'Anime'
+];
+
 const escapeHtml = value =>
   String(value ?? '').replace(/[&<>"']/g, char => ({
     '&': '&amp;',
@@ -23,17 +35,10 @@ const escapeHtml = value =>
   })[char]);
 
 const me = () => room?.players?.find(player => player.id === socket.id);
-
-const activePlayers = () =>
-  room?.players?.filter(player => player.connected) || [];
-
-const currentPlayer = () =>
-  activePlayers()[room?.currentTurnIndex];
-
+const activePlayers = () => room?.players?.filter(player => player.connected) || [];
+const currentPlayer = () => activePlayers()[room?.currentTurnIndex];
 const money = value => `₹${Number(value || 0)}`;
-
 const list = value => Array.isArray(value) ? value : [];
-
 const isHost = () => room?.hostId === socket.id;
 
 function toast(message) {
@@ -65,10 +70,7 @@ socket.on('room:update', data => {
 });
 
 socket.on('error:message', toast);
-
-socket.on('connect', () => {
-  render();
-});
+socket.on('connect', render);
 
 function shell(content) {
   root.innerHTML = `
@@ -97,7 +99,6 @@ function renderHome() {
   shell(`
     <main class="hero">
       <div class="eyebrow">THE ULTIMATE CHARACTER AUCTION</div>
-
       <h1>BUILD YOUR TEAM.<br><span>CLAIM THE CROWN.</span></h1>
 
       <p class="intro">
@@ -124,7 +125,6 @@ function renderHome() {
 
           <label>Room code</label>
           <input id="roomCode" maxlength="6" placeholder="6-character code">
-
           <button class="secondary" id="joinBtn">JOIN ROOM</button>
         </section>
       </div>
@@ -139,12 +139,10 @@ function renderHome() {
 
   document.querySelector('#createBtn').onclick = () => {
     const name = document.querySelector('#createName').value.trim();
-
     if (!name) return toast('Enter your player name.');
 
     playerName = name;
     localStorage.setItem('ba_name', name);
-
     socket.emit('room:create', { name });
   };
 
@@ -152,28 +150,16 @@ function renderHome() {
     const name = document.querySelector('#joinName').value.trim();
     const code = document.querySelector('#roomCode').value.trim().toUpperCase();
 
-    if (!name || !code) {
-      return toast('Enter your name and room code.');
-    }
+    if (!name || !code) return toast('Enter your name and room code.');
 
     playerName = name;
     localStorage.setItem('ba_name', name);
-
     socket.emit('room:join', { name, code });
   };
 }
 
 function renderLobby() {
   const host = isHost();
-
-  const universeOptions = [
-    'Marvel',
-    'DC',
-    'Naruto',
-    'Dragon Ball',
-    'Ramayana',
-    'Mahabharata'
-  ];
 
   const playerRows = list(room.players).map(player => `
     <div class="player-row">
@@ -211,15 +197,15 @@ function renderLobby() {
           <h2>GAME CONFIGURATION</h2>
 
           ${host ? `
-            <label>Universes (choose one or more)</label>
+            <label>Genres (choose one or combine multiple)</label>
 
             <div class="universe-picks">
-              ${universeOptions.map(universe => `
+              ${GENRES.map(genre => `
                 <label class="check">
                   <input type="checkbox"
-                    value="${escapeHtml(universe)}"
-                    ${selectedUniverses.includes(universe) ? 'checked' : ''}>
-                  ${escapeHtml(universe)}
+                    value="${escapeHtml(genre)}"
+                    ${selectedUniverses.includes(genre) ? 'checked' : ''}>
+                  ${escapeHtml(genre)}
                 </label>
               `).join('')}
             </div>
@@ -244,12 +230,8 @@ function renderLobby() {
 
             <div class="notice">
               <b>Automatic character count</b>
-              <p>
-                Required characters =
-                number of players × team size.
-              </p>
-              <p>
-                Current requirement:
+              <p>Required characters = number of players × team size.</p>
+              <p>Current requirement:
                 <b id="requiredCount">${room.players.length * Number(room.settings?.teamSize || 3)} characters</b>
               </p>
               <p>Each player starts with ₹100.</p>
@@ -261,17 +243,14 @@ function renderLobby() {
             </button>
 
             <p class="muted">
-              The server checks whether the selected universes contain enough
-              characters before starting.
+              The server prepares the selected genre catalogues and checks
+              that enough characters are available.
             </p>
           ` : `
             <div class="waiting">
               <div class="pulse"></div>
               <h3>WAITING FOR HOST</h3>
-              <p>
-                The host is configuring the auction. The game will begin
-                when they start it.
-              </p>
+              <p>The host is configuring the auction.</p>
             </div>
           `}
         </section>
@@ -292,9 +271,8 @@ function renderLobby() {
   if (teamSizeInput) {
     teamSizeInput.oninput = () => {
       const size = Math.max(1, Number(teamSizeInput.value || 1));
-      const count = room.players.length * size;
       document.querySelector('#requiredCount').textContent =
-        `${count} characters`;
+        `${room.players.length * size} characters`;
     };
   }
 
@@ -306,9 +284,7 @@ function renderLobby() {
       const turnSeconds = Number(document.querySelector('#turnSeconds').value);
       const startingBid = Number(document.querySelector('#startingBid').value);
 
-      if (!selectedUniverses.length) {
-        return toast('Select at least one universe.');
-      }
+      if (!selectedUniverses.length) return toast('Select at least one genre.');
 
       if (!Number.isInteger(teamSize) || teamSize < 1 || teamSize > 20) {
         return toast('Enter a valid team size.');
@@ -321,6 +297,9 @@ function renderLobby() {
       if (!Number.isInteger(startingBid) || startingBid < 1 || startingBid >= 100) {
         return toast('Starting bid must be between ₹1 and ₹99.');
       }
+
+      startButton.disabled = true;
+      startButton.textContent = 'PREPARING GAME...';
 
       socket.emit('room:start', {
         universes: selectedUniverses,
@@ -336,14 +315,17 @@ function characterIcon(universe) {
   const icons = {
     Marvel: '✦',
     DC: '⚡',
-    Naruto: '忍',
-    'Dragon Ball': '✧',
+    Football: '⚽',
+    Cricket: '🏏',
+    Anime: '✧',
+    'Harry Potter': '✦',
     Ramayana: '◆',
     Mahabharata: '◆'
   };
 
   return icons[universe] || '★';
 }
+
 function renderCharacterDetails(character) {
   if (!character) {
     return '<p class="muted">Character information is not available.</p>';
@@ -364,9 +346,7 @@ function renderCharacterDetails(character) {
           alt="${escapeHtml(character.name)}"
           onerror="this.style.display='none'">
       ` : `
-        <div class="character-art">
-          ${characterIcon(character.universe)}
-        </div>
+        <div class="character-art">${characterIcon(character.universe)}</div>
       `}
 
       <div class="universe-label">
@@ -380,9 +360,7 @@ function renderCharacterDetails(character) {
       </div>
 
       ${character.description ? `
-        <p class="character-description">
-          ${escapeHtml(character.description)}
-        </p>
+        <p class="character-description">${escapeHtml(character.description)}</p>
       ` : ''}
 
       ${character.combatStyle ? `
@@ -417,9 +395,7 @@ function renderCharacterDetails(character) {
       ${sources.length ? `
         <div class="detail-group">
           <h3>REFERENCES</h3>
-          <ul>
-            ${sources.map(source => `<li>${escapeHtml(source)}</li>`).join('')}
-          </ul>
+          <ul>${sources.map(source => `<li>${escapeHtml(source)}</li>`).join('')}</ul>
         </div>
       ` : ''}
     </div>
@@ -479,26 +455,17 @@ function renderAuction() {
           </div>
           <h1>THE BIDDING ARENA</h1>
         </div>
-
-        <div class="room-chip">
-          ROOM <b>${escapeHtml(room.code)}</b>
-        </div>
+        <div class="room-chip">ROOM <b>${escapeHtml(room.code)}</b></div>
       </div>
 
       <div class="auction-layout">
-        <section>
-          ${renderCharacterDetails(character)}
-        </section>
+        <section>${renderCharacterDetails(character)}</section>
 
         <section class="panel bid-panel">
           <div class="eyebrow">CURRENT HIGHEST BID</div>
-
           <div class="bid-value">${money(room.currentBid)}</div>
-
           <div class="bidder">
-            ${leader
-              ? `LEADING: ${escapeHtml(leader.name)}`
-              : 'NO BIDS YET'}
+            ${leader ? `LEADING: ${escapeHtml(leader.name)}` : 'NO BIDS YET'}
           </div>
 
           <div class="turn-box">
@@ -506,7 +473,6 @@ function renderAuction() {
               <small>CURRENT TURN</small>
               <b>${escapeHtml(turn?.name || '—')}</b>
             </div>
-
             <div id="auctionTimer" class="timer ${remaining <= 3 ? 'urgent' : ''}">
               ${remaining}s
             </div>
@@ -520,9 +486,7 @@ function renderAuction() {
               </div>
 
               <label>INCREASE BY (₹)</label>
-
-              <input id="bidAmount" type="number"
-                min="1" step="1"
+              <input id="bidAmount" type="number" min="1" step="1"
                 value="${selectedBidIncrement}">
 
               <div class="quick-bids">
@@ -539,11 +503,7 @@ function renderAuction() {
             <div class="waiting compact">
               <div class="pulse"></div>
               <b>WAITING FOR ${escapeHtml(turn?.name || 'PLAYER')}</b>
-              <p>
-                ${turn
-                  ? 'Your turn will come around again.'
-                  : 'Waiting for an active player.'}
-              </p>
+              <p>${turn ? 'Your turn will come around again.' : 'Waiting for an active player.'}</p>
             </div>
           `}
         </section>
@@ -554,19 +514,13 @@ function renderAuction() {
           <div class="stat-card ${pl.id === turn?.id ? 'active-player' : ''}">
             <b>${escapeHtml(pl.name)}</b>
             <strong>${money(pl.budget)}</strong>
-            <small>
-              ${pl.team.length}/${teamSize} CHARACTERS
-            </small>
+            <small>${pl.team.length}/${teamSize} CHARACTERS</small>
           </div>
         `).join('')}
       </div>
 
       <section class="panel roster">
-        <h2>
-          YOUR TEAM
-          <small>${player?.team?.length || 0} CHARACTERS</small>
-        </h2>
-
+        <h2>YOUR TEAM <small>${player?.team?.length || 0} CHARACTERS</small></h2>
         <div class="mini-roster">
           ${(player?.team || []).map(character => `
             <span>
@@ -590,9 +544,7 @@ function renderAuction() {
   document.querySelectorAll('[data-bid]').forEach(button => {
     button.onclick = () => {
       selectedBidIncrement = Number(button.dataset.bid);
-      if (bidInput) {
-        bidInput.value = selectedBidIncrement;
-      }
+      if (bidInput) bidInput.value = selectedBidIncrement;
     };
   });
 
@@ -607,64 +559,50 @@ function renderAuction() {
       }
 
       selectedBidIncrement = amount;
-
       socket.emit('bid:increase', { amount });
     };
   }
 
   const skipButton = document.querySelector('#skipBtn');
-
-  if (skipButton) {
-    skipButton.onclick = () => socket.emit('bid:skip');
-  }
+  if (skipButton) skipButton.onclick = () => socket.emit('bid:skip');
 
   startAuctionTimer();
 }
+
 function renderAuctionReady() {
   const host = isHost();
   const characterNumber = Math.max(0, Number(room.characterIndex || 0) + 1);
   const totalCharacters = room.characters?.length || 0;
-  const finished = characterNumber;
-
   const lastCharacter = room.currentCharacter;
 
   shell(`
     <main class="content">
       <div class="eyebrow">AUCTION PROGRESS</div>
-      <h1>${finished ? 'CHARACTER AUCTION RESOLVED' : 'READY TO BEGIN'}</h1>
+      <h1>${characterNumber ? 'CHARACTER AUCTION RESOLVED' : 'READY TO BEGIN'}</h1>
 
       <section class="panel next-character-panel">
         <div class="eyebrow">AUCTION STATUS</div>
-
         <h2>
-          ${finished
-            ? `CHARACTER ${finished} OF ${totalCharacters} COMPLETED`
+          ${characterNumber
+            ? `CHARACTER ${characterNumber} OF ${totalCharacters} COMPLETED`
             : 'THE FIRST CHARACTER IS READY'}
         </h2>
 
-        ${lastCharacter ? `
-          <p class="intro">
-            Last auction: <b>${escapeHtml(lastCharacter.name)}</b>
-          </p>
-        ` : `
-          <p class="intro">
-            The host will reveal the first randomly selected character.
-          </p>
-        `}
+        ${lastCharacter
+          ? `<p class="intro">Last auction: <b>${escapeHtml(lastCharacter.name)}</b></p>`
+          : '<p class="intro">The host will reveal the first randomly selected character.</p>'}
 
         <div class="progress-track">
           <div class="progress-fill"
-            style="width:${totalCharacters ? Math.min(100, finished / totalCharacters * 100) : 0}%">
+            style="width:${totalCharacters ? Math.min(100, characterNumber / totalCharacters * 100) : 0}%">
           </div>
         </div>
 
-        <p class="muted">
-          ${finished} of ${totalCharacters} characters processed.
-        </p>
+        <p class="muted">${characterNumber} of ${totalCharacters} characters processed.</p>
 
         ${host ? `
           <button class="primary" id="nextCharacterBtn">
-            ${finished ? 'NEXT CHARACTER' : 'START FIRST AUCTION'}
+            ${characterNumber ? 'NEXT CHARACTER' : 'START FIRST AUCTION'}
           </button>
         ` : `
           <div class="waiting">
@@ -680,9 +618,7 @@ function renderAuctionReady() {
           <div class="stat-card">
             <b>${escapeHtml(player.name)}</b>
             <strong>${money(player.budget)}</strong>
-            <small>
-              ${player.team.length}/${room.settings.teamSize} CHARACTERS
-            </small>
+            <small>${player.team.length}/${room.settings.teamSize} CHARACTERS</small>
           </div>
         `).join('')}
       </div>
@@ -712,59 +648,121 @@ function renderAuctionReady() {
   }
 }
 
-function renderReadyForFight() {
-  const host = isHost();
+function renderLoadingCharacters() {
+  shell(`
+    <main class="content">
+      <section class="panel loading-panel">
+        <div class="loading-orb">✦</div>
+        <div class="eyebrow">PREPARING THE BATTLE</div>
+        <h1>GENERATING CHARACTERS</h1>
+        <p class="intro">
+          Your selected genres are being prepared.
+          The auction will begin as soon as the character pool is ready.
+        </p>
+        <div class="loading-bar">
+          <div class="loading-bar-fill"></div>
+        </div>
+        <h3 class="loading-message">PLEASE WAIT...</h3>
+        <p class="muted">
+          This may take a little time while the character catalogue is generated.
+        </p>
+      </section>
+    </main>
+  `);
+}
+
+function renderTeamReveal() {
+  const player = me();
+  const team = list(player?.team);
 
   shell(`
     <main class="content">
       <div class="eyebrow">AUCTION COMPLETE</div>
-      <h1>YOUR TEAMS ARE READY</h1>
+      <h1>YOUR TEAM</h1>
 
       <p class="intro">
-        All team slots have been filled. Review your squads before the
-        championship begins.
+        Your team is complete. Take a moment to review your characters.
+        Other players cannot see your team yet.
       </p>
 
-      <div class="team-grid">
-        ${room.players.map(player => `
-          <section class="panel">
-            <h2>${escapeHtml(player.name)}</h2>
+      <section class="panel reveal-panel">
+        <h2>YOUR SQUAD <small>${team.length}/${Number(room.settings?.teamSize || 0)}</small></h2>
 
-            <div class="team-characters">
-              ${player.team.map(character => `
-                <div class="team-character">
-                  <b>${escapeHtml(character.name)}</b>
-                  <span>
-                    ${Number(character.rating || 0)}/100 ·
-                    ${character.allocatedFree ? 'Reserve allocation' : `Paid ${money(character.paid)}`}
-                  </span>
-                </div>
-              `).join('')}
+        <div class="team-characters">
+          ${team.map(character => `
+            <div class="team-character">
+              <b>${escapeHtml(character.name)}</b>
+              <span>
+                ${Number(character.rating || 0)}/100 ·
+                ${character.allocatedFree ? 'FREE' : `Paid ${money(character.paid)}`}
+              </span>
             </div>
+          `).join('')}
+        </div>
 
-            <div class="team-total">
-              REMAINING BUDGET <b>${money(player.budget)}</b>
+        <div class="team-total">
+          REMAINING BUDGET <b>${money(player?.budget)}</b>
+        </div>
+      </section>
+
+      <section class="panel waiting">
+        <div class="pulse"></div>
+        <h3>TEAM REVEAL IN PROGRESS</h3>
+        <p>Your team is visible only to you.</p>
+      </section>
+    </main>
+  `);
+}
+
+function renderReadyForFight() {
+  const host = isHost();
+  const player = me();
+  const team = list(player?.team);
+
+  shell(`
+    <main class="content">
+      <div class="eyebrow">AUCTION COMPLETE</div>
+      <h1>YOUR TEAM IS READY</h1>
+
+      <p class="intro">
+        All players have completed their teams.
+        Wait for the host to reveal the teams and begin the championship.
+      </p>
+
+      <section class="panel reveal-panel">
+        <h2>YOUR TEAM <small>${team.length}/${Number(room.settings?.teamSize || 0)}</small></h2>
+
+        <div class="team-characters">
+          ${team.map(character => `
+            <div class="team-character">
+              <b>${escapeHtml(character.name)}</b>
+              <span>
+                ${Number(character.rating || 0)}/100 ·
+                ${character.allocatedFree ? 'FREE' : `Paid ${money(character.paid)}`}
+              </span>
             </div>
-          </section>
-        `).join('')}
-      </div>
+          `).join('') || '<p class="muted">Your team is not available.</p>'}
+        </div>
+
+        <div class="team-total">
+          REMAINING BUDGET <b>${money(player?.budget)}</b>
+        </div>
+      </section>
 
       <div class="notice">
-        <b>Reserve characters allocated:</b>
-        ${Number(room.reserveCount || 0)}
-        <p>
-          Any unsold characters used to complete teams were allocated
-          automatically without duplicate assignments.
-        </p>
+        <b>All teams are complete!</b>
+        <p>The teams will remain private until the host presses COMPARE TEAMS.</p>
       </div>
 
       ${host ? `
-        <button class="primary" id="fightBtn">FIGHT — START CHAMPIONSHIP</button>
+        <button class="primary compare-button" id="fightBtn">
+          COMPARE TEAMS
+        </button>
       ` : `
         <div class="waiting">
           <div class="pulse"></div>
           <h3>WAITING FOR HOST</h3>
-          <p>The host will start the championship.</p>
+          <p>The host will reveal all teams and start the championship.</p>
         </div>
       `}
     </main>
@@ -775,7 +773,7 @@ function renderReadyForFight() {
   if (fightButton) {
     fightButton.onclick = () => {
       fightButton.disabled = true;
-      fightButton.textContent = 'PREPARING CHAMPIONSHIP...';
+      fightButton.textContent = 'REVEALING TEAMS...';
       socket.emit('championship:start');
     };
   }
@@ -800,11 +798,7 @@ function matchPlayerName(match, side) {
 function renderMatch(match, index) {
   const playerA = matchPlayerName(match, 'a');
   const playerB = matchPlayerName(match, 'b');
-
-  const winner =
-    match.winnerName ||
-    match.winner?.name ||
-    '';
+  const winner = match.winnerName || match.winner?.name || '';
 
   const isDraw =
     match.isDraw === true ||
@@ -817,7 +811,6 @@ function renderMatch(match, index) {
   return `
     <div class="match-card">
       <div class="match-number">MATCH ${index + 1}</div>
-
       <div class="match-teams">
         <b>${escapeHtml(playerA)}</b>
         <span class="match-vs">VS</span>
@@ -825,25 +818,18 @@ function renderMatch(match, index) {
       </div>
 
       ${scoreA !== '' || scoreB !== '' ? `
-        <div class="match-score">
-          ${escapeHtml(scoreA)} – ${escapeHtml(scoreB)}
-        </div>
+        <div class="match-score">${escapeHtml(scoreA)} – ${escapeHtml(scoreB)}</div>
       ` : ''}
 
       <div class="match-result">
-        ${isDraw
-          ? 'DRAW'
-          : winner
-            ? `WINNER: ${escapeHtml(winner)}`
-            : escapeHtml(match.result || 'RESULT')}
+        ${isDraw ? 'DRAW' : winner ? `WINNER: ${escapeHtml(winner)}` : escapeHtml(match.result || 'RESULT')}
       </div>
 
-      ${match.explanation ? `
-        <p class="muted">${escapeHtml(match.explanation)}</p>
-      ` : ''}
+      ${match.explanation ? `<p class="muted">${escapeHtml(match.explanation)}</p>` : ''}
     </div>
   `;
 }
+
 function renderChampionship() {
   const championship = room.championship || {};
   const standings = list(championship.standings);
@@ -884,9 +870,7 @@ function renderChampionship() {
               </div>
             `).join('')}
           </div>
-        ` : `
-          <p class="muted">The server did not return leaderboard data.</p>
-        `}
+        ` : '<p class="muted">The server did not return leaderboard data.</p>'}
 
         <div class="notice">
           <b>Ranking rules</b>
@@ -903,7 +887,6 @@ function renderChampionship() {
 
       <section class="panel">
         <h2>ALL MATCH RESULTS</h2>
-
         <div class="matches-grid">
           ${matches.length
             ? matches.map((match, index) => renderMatch(match, index)).join('')
@@ -913,12 +896,10 @@ function renderChampionship() {
 
       <section class="panel">
         <h2>FINAL TEAM ROSTERS</h2>
-
         <div class="team-grid">
           ${room.players.map(player => `
             <section class="panel">
               <h2>${escapeHtml(player.name)}</h2>
-
               <div class="team-characters">
                 ${player.team.map(character => `
                   <div class="team-character">
@@ -930,7 +911,6 @@ function renderChampionship() {
                   </div>
                 `).join('')}
               </div>
-
               <div class="team-total">
                 TEAM STRENGTH
                 <b>${Number(
@@ -961,26 +941,20 @@ function renderIncomplete() {
 
       <section class="panel">
         <h2>INCOMPLETE TEAM WARNING</h2>
-
         <p class="intro">
           The available characters were not sufficient to fill every team slot.
         </p>
 
         <div class="notice">
-          ${escapeHtml(
-            room.completionError ||
-            'The server could not allocate enough reserve characters to complete all teams.'
-          )}
+          ${escapeHtml(room.completionError ||
+            'The server could not allocate enough reserve characters to complete all teams.')}
         </div>
 
         <div class="team-grid">
           ${room.players.map(player => `
             <section class="panel">
               <h2>${escapeHtml(player.name)}</h2>
-              <p>
-                ${player.team.length}/${room.settings.teamSize} characters
-              </p>
-
+              <p>${player.team.length}/${room.settings.teamSize} characters</p>
               <div class="team-characters">
                 ${player.team.map(character => `
                   <div class="team-character">
@@ -1002,7 +976,6 @@ function renderPaused() {
     <main class="content">
       <div class="eyebrow">AUCTION PAUSED</div>
       <h1>WAITING FOR PLAYERS</h1>
-
       <section class="panel waiting">
         <div class="pulse"></div>
         <h3>THE AUCTION IS PAUSED</h3>
@@ -1024,6 +997,9 @@ function render() {
     case 'lobby':
       return renderLobby();
 
+    case 'loading_characters':
+      return renderLoadingCharacters();
+
     case 'auction_ready':
       return renderAuctionReady();
 
@@ -1032,6 +1008,9 @@ function render() {
 
     case 'auction_paused':
       return renderPaused();
+
+    case 'team_reveal':
+      return renderTeamReveal();
 
     case 'ready_for_fight':
       return renderReadyForFight();
@@ -1046,9 +1025,7 @@ function render() {
       shell(`
         <main class="content">
           <h1>UNKNOWN GAME STATUS</h1>
-          <p class="muted">
-            Status received: ${escapeHtml(room.status)}
-          </p>
+          <p class="muted">Status received: ${escapeHtml(room.status)}</p>
         </main>
       `);
   }
