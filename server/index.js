@@ -4,7 +4,7 @@ import express from 'express';
 import http from 'http';
 import cors from 'cors';
 import { Server } from 'socket.io';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -108,21 +108,163 @@ function normalizeCharacter(raw, genre) {
   };
 }
 
+
+// --------------------------------------------------
+// GEMINI 3.8 LIVE API
+// --------------------------------------------------
+
+let geminiClient = null;
+
 function getGeminiModel() {
   if (!process.env.GEMINI_API_KEY) {
-    throw new Error('Gemini API key is missing. Add GEMINI_API_KEY in Render.');
+    throw new Error(
+      'Gemini API key is missing. Add GEMINI_API_KEY in Render.'
+    );
   }
 
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  if (!geminiClient) {
+    geminiClient = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY
+    });
+  }
 
-  return genAI.getGenerativeModel({
-    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-    generationConfig: {
-      responseMimeType: 'application/json',
-      temperature: 0.3
+  // Adapter preserves the existing game functions.
+  return {
+    generateContent: async (prompt) => {
+      const modelName =
+        process.env.GEMINI_MODEL || 'gemini-3.8-live';
+
+      return generateLiveText(geminiClient, modelName, prompt);
+    }
+  };
+}
+
+async function generateLiveText(client, modelName, prompt) {
+  return new Promise(async (resolve, reject) => {
+    let session = null;
+    let output = '';
+    let settled = false;
+
+    const timeout = setTimeout(() => {
+      finish(
+        reject,
+        new Error('Gemini Live response timed out after 150 seconds.')
+      );
+    }, 150000);
+
+    function finish(callback, value) {
+      if (settled) return;
+
+      settled = true;
+      clearTimeout(timeout);
+
+      if (session) {
+        try {
+          session.close();
+        } catch (error) {
+          console.warn('Gemini session cleanup:', error.message);
+        }
+      }
+
+      callback(value);
+    }
+
+    try {
+      session = await client.live.connect({
+        model: modelName,
+
+        config: {
+          responseModalities: ['TEXT'],
+          temperature: 0.3,
+          maxOutputTokens: 32768
+        },
+
+        callbacks: {
+          onmessage: (message) => {
+            if (settled) return;
+
+            const serverContent = message?.serverContent;
+
+            // Collect every text part returned by Gemini.
+            const parts = serverContent?.modelTurn?.parts || [];
+
+            for (const part of parts) {
+              if (typeof part.text === 'string') {
+                output += part.text;
+              }
+            }
+
+            // Also support text transcription if supplied.
+            if (
+              !output &&
+              typeof serverContent?.outputTranscription?.text === 'string'
+            ) {
+              output += serverContent.outputTranscription.text;
+            }
+
+            // Resolve only when Gemini completes its response.
+            if (serverContent?.turnComplete === true) {
+              if (!output.trim()) {
+                finish(
+                  reject,
+                  new Error('Gemini Live returned an empty response.')
+                );
+                return;
+              }
+
+              // Preserve the response format used by the old code.
+              finish(resolve, {
+                response: {
+                  text: () => output.trim()
+                }
+              });
+            }
+          },
+
+          onerror: (error) => {
+            finish(
+              reject,
+              new Error(
+                error?.message ||
+                error?.error?.message ||
+                'Gemini Live WebSocket error.'
+              )
+            );
+          },
+
+          onclose: () => {
+            if (!settled) {
+              finish(
+                reject,
+                new Error(
+                  'Gemini Live connection closed before completing its response.'
+                )
+              );
+            }
+          }
+        }
+      });
+
+      // Send the prompt as text, not audio.
+      session.sendClientContent({
+        turns: [
+          {
+            role: 'user',
+            parts: [{ text: prompt }]
+          }
+        ],
+        turnComplete: true
+      });
+
+    } catch (error) {
+      finish(reject, error);
     }
   });
 }
+
+// --------------------------------------------------
+// GEMINI RETRY HANDLING
+// --------------------------------------------------
 
 async function generateWithRetry(model, prompt, label = 'Gemini') {
   let lastError;
@@ -130,8 +272,10 @@ async function generateWithRetry(model, prompt, label = 'Gemini') {
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       return await model.generateContent(prompt);
+
     } catch (error) {
       lastError = error;
+
       const message = String(error.message || '').toLowerCase();
 
       const quotaExhausted =
@@ -143,13 +287,18 @@ async function generateWithRetry(model, prompt, label = 'Gemini') {
 
       if (quotaExhausted) {
         throw new Error(
-          `${label}: Gemini quota is exhausted. Check Google AI Studio usage and billing.`
+          `${label}: Gemini quota or rate limit reached. Check Google AI Studio usage and project limits.`
         );
       }
 
       if (attempt < 3) {
         const delay = attempt * 2500;
-        console.warn(`${label} attempt ${attempt} failed. Retrying in ${delay}ms.`);
+
+        console.warn(
+          `${label} attempt ${attempt} failed. Retrying in ${delay}ms.`,
+          error.message
+        );
+
         await sleep(delay);
       }
     }
@@ -157,6 +306,7 @@ async function generateWithRetry(model, prompt, label = 'Gemini') {
 
   throw lastError || new Error(`${label} failed.`);
 }
+
 
 // --------------------------------------------------
 // PERMANENT MARVEL AND DC DATABASES
