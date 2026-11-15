@@ -1125,7 +1125,7 @@ function createFallbackChampionship(room, errorMessage) {
         result = 'TEAM_B_WINS';
       }
 
-      matches.push({
+           matches.push({
         teamAId: a.id,
         teamAName: a.name,
         teamBId: b.id,
@@ -1134,15 +1134,16 @@ function createFallbackChampionship(room, errorMessage) {
         scoreB,
         winnerId,
         result,
-       explanation: isSpecialMatch(a, b, scoreA, scoreB)
-  ? `${a.name} scored ${scoreA}/100 and ${b.name} scored ${scoreB}/100. This is a special match because ${
-      scoreA === scoreB
-        ? 'the result is a draw.'
-        : Math.abs(scoreA - scoreB) <= 3
-          ? 'the result was exceptionally close.'
-          : 'the winning team had a lower average character rating.'
-    }`
-  : '',
+        explanation: isSpecialMatch(a, b, scoreA, scoreB)
+          ? `${a.name} scored ${scoreA}/100 and ${b.name} scored ${scoreB}/100. This is a special match because ${
+              scoreA === scoreB
+                ? 'the result is a draw.'
+                : Math.abs(scoreA - scoreB) <= 3
+                  ? 'the result was exceptionally close.'
+                  : 'the winning team had a lower average character rating.'
+            }`
+          : ''
+      });
     }
   }
 
@@ -1486,17 +1487,17 @@ async function evaluateChampionshipWithGemini(room) {
         scoreB: cleanScoreB,
         winnerId,
         result,
-        explanation:explanation: isSpecialMatch(
-  playerA,
-  playerB,
-  cleanScoreA,
-  cleanScoreB
-)
-  ? safeText(
-      entry.explanation,
-      `${playerA.name}: ${cleanScoreA}/100. ${playerB.name}: ${cleanScoreB}/100.`
-    )
-  : '',
+                explanation: isSpecialMatch(
+          playerA,
+          playerB,
+          cleanScoreA,
+          cleanScoreB
+        )
+          ? safeText(
+              entry.explanation,
+              `${playerA.name}: ${cleanScoreA}/100. ${playerB.name}: ${cleanScoreB}/100.`
+            )
+          : '',
         analysisStatus: 'complete'
       });
     }
