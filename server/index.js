@@ -486,67 +486,165 @@ async function getGenreCharacters(genre) {
 
 // --------------------------------------------------
 // CHARACTER IMAGE LOOKUP
+
+// --------------------------------------------------
+// CHARACTER IMAGE LOOKUP - IMPROVED
 // --------------------------------------------------
 
+function normalizeImageText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
 async function getWikipediaImage(character) {
-  const cacheKey = `${character.universe}:${character.name}`.toLowerCase();
-  if (imageCache.has(cacheKey)) return imageCache.get(cacheKey);
+  const cacheKey =
+    `${character.universe}:${character.name}`.toLowerCase();
+
+  if (imageCache.has(cacheKey)) {
+    return imageCache.get(cacheKey);
+  }
 
   const promise = (async () => {
     try {
-      const url = new URL('https://en.wikipedia.org/w/api.php');
-      url.searchParams.set('action', 'query');
-      url.searchParams.set('generator', 'search');
-      url.searchParams.set('gsrsearch', `${character.name} ${character.universe}`);
-      url.searchParams.set('gsrnamespace', '0');
-      url.searchParams.set('gsrlimit', '5');
-      url.searchParams.set('prop', 'pageimages');
-      url.searchParams.set('piprop', 'thumbnail');
-      url.searchParams.set('pithumbsize', '700');
-      url.searchParams.set('format', 'json');
+      const searchUrl = new URL('https://en.wikipedia.org/w/api.php');
 
-      const response = await fetch(url, {
-        signal: AbortSignal.timeout(5000),
-        headers: { 'User-Agent': 'BattleAuctionGame/1.0' }
+      searchUrl.searchParams.set('action', 'query');
+      searchUrl.searchParams.set('list', 'search');
+      searchUrl.searchParams.set(
+        'srsearch',
+        `"${character.name}" ${character.universe}`
+      );
+      searchUrl.searchParams.set('srnamespace', '0');
+      searchUrl.searchParams.set('srlimit', '10');
+      searchUrl.searchParams.set('format', 'json');
+      searchUrl.searchParams.set('origin', '*');
+
+      const searchResponse = await fetch(searchUrl, {
+        signal: AbortSignal.timeout(8000),
+        headers: {
+          'User-Agent': 'BattleAuctionGame/1.0 (character image lookup)'
+        }
       });
 
-      if (!response.ok) return null;
+      if (!searchResponse.ok) return null;
 
-      const data = await response.json();
-      const pages = Object.values(data.query?.pages || {});
-      if (!pages.length) return null;
+      const searchData = await searchResponse.json();
+      const results = searchData.query?.search || [];
 
-      const name = character.name.toLowerCase();
-      const best = pages.find(p =>
-        String(p.title || '').toLowerCase().includes(name)
-      ) || pages[0];
+      if (!results.length) return null;
 
-      return best.thumbnail?.source || null;
+      const characterName = normalizeImageText(character.name);
+      const genreName = normalizeImageText(character.universe);
+
+      // Only accept results whose titles actually match the character.
+      const rankedResults = results
+        .map(page => {
+          const title = normalizeImageText(page.title);
+
+          let score = 0;
+
+          if (title === characterName) {
+            score = 100;
+          } else if (title.startsWith(characterName + ' ')) {
+            score = 90;
+          } else if (title.includes(characterName)) {
+            score = 75;
+          }
+
+          if (genreName && title.includes(genreName)) {
+            score += 10;
+          }
+
+          return { page, score };
+        })
+        .filter(item => item.score >= 75)
+        .sort((a, b) => b.score - a.score);
+
+      if (!rankedResults.length) return null;
+
+      // Check the best matching pages for an actual thumbnail.
+      const pageIds = rankedResults
+        .slice(0, 5)
+        .map(item => item.page.pageid)
+        .join('|');
+
+      const imageUrl = new URL('https://en.wikipedia.org/w/api.php');
+
+      imageUrl.searchParams.set('action', 'query');
+      imageUrl.searchParams.set('pageids', pageIds);
+      imageUrl.searchParams.set('prop', 'pageimages');
+      imageUrl.searchParams.set('piprop', 'thumbnail');
+      imageUrl.searchParams.set('pithumbsize', '700');
+      imageUrl.searchParams.set('format', 'json');
+      imageUrl.searchParams.set('origin', '*');
+
+      const imageResponse = await fetch(imageUrl, {
+        signal: AbortSignal.timeout(8000),
+        headers: {
+          'User-Agent': 'BattleAuctionGame/1.0 (character image lookup)'
+        }
+      });
+
+      if (!imageResponse.ok) return null;
+
+      const imageData = await imageResponse.json();
+      const pages = imageData.query?.pages || {};
+
+      for (const item of rankedResults) {
+        const page = pages[item.page.pageid];
+
+        if (page?.thumbnail?.source) {
+          return page.thumbnail.source;
+        }
+      }
+
+      return null;
     } catch (error) {
-      console.warn(`Image lookup failed for ${character.name}:`, error.message);
+      console.warn(
+        `Image lookup failed for ${character.name}:`,
+        error.message
+      );
+
       return null;
     }
   })();
 
   imageCache.set(cacheKey, promise);
+
   return promise;
 }
 
 async function attachCharacterImages(room) {
   let nextIndex = 0;
+
   const workerCount = Math.min(5, room.characters.length);
 
   async function worker() {
     while (nextIndex < room.characters.length) {
       const index = nextIndex++;
-      room.characters[index].imageUrl =
-        await getWikipediaImage(room.characters[index]);
+      const character = room.characters[index];
+
+      try {
+        character.imageUrl = await getWikipediaImage(character);
+      } catch (error) {
+        character.imageUrl = null;
+      }
+
+      // Send updates as images become available.
+      // This avoids waiting for the entire character pool.
+      if (rooms.has(room.code)) {
+        emitRoom(room);
+      }
     }
   }
 
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
-
-  if (rooms.has(room.code)) emitRoom(room);
+  await Promise.all(
+    Array.from({ length: workerCount }, () => worker())
+  );
 }
 
 // --------------------------------------------------
