@@ -554,28 +554,61 @@ async function attachCharacterImages(room) {
 // --------------------------------------------------
 
 function publicRoom(room, viewerId) {
-  const showAllTeams = room.status === 'championship';
+  const showAllTeams = [
+    'team_reveal',
+    'ready_for_fight',
+    'championship'
+  ].includes(room.status);
+
+  const showImages = [
+    'auction_ready',
+    'auction'
+  ].includes(room.status);
+
+  const publicCharacter = character => {
+    if (!character) return null;
+
+    const copy = { ...character };
+
+    if (!showImages) {
+      delete copy.imageUrl;
+    }
+
+    return copy;
+  };
 
   const connectedPlayers = room.players.filter(p => p.connected);
+
   const currentTurnIndex = connectedPlayers.findIndex(
     p => p.id === room.currentTurnPlayerId
   );
+
+  const currentCharacter = room.currentCharacter
+    ? (
+        room.characters.find(c => c.id === room.currentCharacter.id) ||
+        room.currentCharacter
+      )
+    : null;
 
   return {
     code: room.code,
     hostId: room.hostId,
     status: room.status,
     settings: room.settings,
+
     players: room.players.map(player => ({
       id: player.id,
       name: player.name,
       budget: player.budget,
-      team: showAllTeams || player.id === viewerId ? player.team : [],
+      team: showAllTeams || player.id === viewerId
+        ? player.team.map(publicCharacter)
+        : [],
       connected: player.connected
     })),
-    characters: room.characters,
+
+    characters: room.characters.map(publicCharacter),
     characterIndex: room.characterIndex,
-    currentCharacter: room.currentCharacter,
+    currentCharacter: publicCharacter(currentCharacter),
     currentBid: room.currentBid,
     highestBidderId: room.highestBidderId,
     lastBidderId: room.lastBidderId,
@@ -822,26 +855,46 @@ function completeAuction(room) {
   stopTimer(room.code);
 
   const emptySlots = [];
+
   for (const player of room.players) {
-    while (player.team.length < room.settings.teamSize) emptySlots.push(player);
+    while (player.team.length < room.settings.teamSize) {
+      emptySlots.push(player);
+    }
   }
 
   const assignedIds = new Set(
-    room.players.flatMap(player => player.team.map(character => character.id))
+    room.players.flatMap(player =>
+      player.team.map(character => character.id)
+    )
   );
 
-  const availableCharacters = room.characters.filter(
+  // First priority: characters held because nobody bought them.
+  const heldCharacters = room.reserveCharacters.filter(
     character => !assignedIds.has(character.id)
   );
 
-  const freePool = shuffle(availableCharacters);
+  const heldIds = new Set(heldCharacters.map(c => c.id));
+
+  // Second priority: any other unused characters.
+  const remainingCharacters = room.characters.filter(
+    character =>
+      !assignedIds.has(character.id) &&
+      !heldIds.has(character.id)
+  );
+
+  const freePool = [
+    ...heldCharacters,
+    ...remainingCharacters
+  ];
 
   if (freePool.length < emptySlots.length) {
     room.status = 'incomplete';
     room.currentCharacter = null;
     room.turnDeadline = null;
+
     room.completionError =
       `Not enough unused characters. ${emptySlots.length} slots are empty, but only ${freePool.length} characters remain.`;
+
     emitRoom(room);
     return;
   }
@@ -855,6 +908,7 @@ function completeAuction(room) {
   });
 
   room.reserveCharacters = freePool.slice(emptySlots.length);
+
   room.currentCharacter = null;
   room.turnDeadline = null;
   room.currentTurnPlayerId = null;
@@ -868,9 +922,11 @@ function completeAuction(room) {
 
   const timer = setTimeout(() => {
     const currentRoom = rooms.get(room.code);
+
     if (!currentRoom || currentRoom.status !== 'team_reveal') return;
 
     currentRoom.status = 'ready_for_fight';
+
     revealTimers.delete(room.code);
     emitRoom(currentRoom);
   }, 10000);
@@ -899,6 +955,29 @@ function calculateTeamStrength(team) {
   );
 
   return Math.max(0, Math.min(100, Math.round(ratings / team.length + synergy)));
+}
+function isSpecialMatch(playerA, playerB, scoreA, scoreB) {
+  if (scoreA === scoreB) return true;
+
+  if (Math.abs(scoreA - scoreB) <= 3) return true;
+
+  const averageRating = team => {
+    if (!team.length) return 0;
+
+    return team.reduce(
+      (total, character) => total + Number(character.rating || 0),
+      0
+    ) / team.length;
+  };
+
+  const ratingA = averageRating(playerA.team);
+  const ratingB = averageRating(playerB.team);
+
+  if (scoreA > scoreB && ratingB - ratingA >= 8) return true;
+
+  if (scoreB > scoreA && ratingA - ratingB >= 8) return true;
+
+  return false;
 }
 
 function calculateStandings(room, matches, evaluations = []) {
@@ -1055,12 +1134,15 @@ function createFallbackChampionship(room, errorMessage) {
         scoreB,
         winnerId,
         result,
-        explanation:
-          `${a.name} received ${scoreA}/100 and ${b.name} received ${scoreB}/100 using the fallback team-strength calculation.`,
-        teamAAnalysis: buildCharacterAnalysis(a.team, b.team),
-        teamBAnalysis: buildCharacterAnalysis(b.team, a.team),
-        analysisStatus: 'fallback'
-      });
+       explanation: isSpecialMatch(a, b, scoreA, scoreB)
+  ? `${a.name} scored ${scoreA}/100 and ${b.name} scored ${scoreB}/100. This is a special match because ${
+      scoreA === scoreB
+        ? 'the result is a draw.'
+        : Math.abs(scoreA - scoreB) <= 3
+          ? 'the result was exceptionally close.'
+          : 'the winning team had a lower average character rating.'
+    }`
+  : '',
     }
   }
 
@@ -1404,20 +1486,17 @@ async function evaluateChampionshipWithGemini(room) {
         scoreB: cleanScoreB,
         winnerId,
         result,
-        explanation: safeText(
-          entry.explanation,
-          `${playerA.name}: ${cleanScoreA}/100. ${playerB.name}: ${cleanScoreB}/100.`
-        ),
-        teamAAnalysis: sanitizeCharacterAnalysis(
-          entry.teamAAnalysis,
-          playerA.team,
-          playerB.team
-        ),
-        teamBAnalysis: sanitizeCharacterAnalysis(
-          entry.teamBAnalysis,
-          playerB.team,
-          playerA.team
-        ),
+        explanation:explanation: isSpecialMatch(
+  playerA,
+  playerB,
+  cleanScoreA,
+  cleanScoreB
+)
+  ? safeText(
+      entry.explanation,
+      `${playerA.name}: ${cleanScoreA}/100. ${playerB.name}: ${cleanScoreB}/100.`
+    )
+  : '',
         analysisStatus: 'complete'
       });
     }
