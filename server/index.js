@@ -1,26 +1,52 @@
-
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
+import crypto from 'crypto';
 import cors from 'cors';
 import { Server } from 'socket.io';
 import { GoogleGenAI } from '@google/genai';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+// --------------------------------------------------
+// SETUP
+// --------------------------------------------------
 
 const PORT = process.env.PORT || 3000;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Set CORS_ORIGIN on your host to a comma-separated list of allowed origins,
+// e.g. "https://my-frontend.vercel.app". If it is not set, all origins are
+// allowed (the old behaviour) so nothing breaks.
+const corsList = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map(value => value.trim())
+  .filter(Boolean);
+const corsOrigin = corsList.length ? corsList : true;
+
+if (!corsList.length) {
+  console.warn('CORS_ORIGIN is not set: all origins are allowed. Set it in production.');
+}
+
+const app = express();
+app.set('trust proxy', 1);
+app.use(cors({ origin: corsOrigin }));
+app.use(express.json({ limit: '50kb' }));
+
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: corsOrigin },
+  maxHttpBufferSize: 1e5
+});
+
+const MAX_PLAYERS = 10;
+const STARTING_BUDGET = 100;
+const ROOM_IDLE_MS = 30 * 60 * 1000;
+
 const rooms = new Map();
 const turnTimers = new Map();
 const revealTimers = new Map();
+const emitTimers = new Map();
 const genreCache = new Map();
 const imageCache = new Map();
 
@@ -49,6 +75,14 @@ function slugify(value) {
 
 function safeText(value, fallback = '') {
   return String(value || fallback).trim().slice(0, 1000);
+}
+
+function cleanName(value, fallback) {
+  const cleaned = String(value || '')
+    .replace(/[\u0000-\u001f<>]/g, '')
+    .trim()
+    .slice(0, 24);
+  return cleaned || fallback;
 }
 
 function cleanList(value) {
@@ -108,197 +142,105 @@ function normalizeCharacter(raw, genre) {
   };
 }
 
+// --------------------------------------------------
+// GEMINI (standard generateContent API)
+// --------------------------------------------------
 
-// --------------------------------------------------
-// GEMINI 3.8 LIVE API
-// --------------------------------------------------
+class GeminiQuotaError extends Error {}
 
 let geminiClient = null;
 
-function getGeminiModel() {
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error(
-      'Gemini API key is missing. Add GEMINI_API_KEY in Render.'
+function resolveModelName() {
+  let name = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
+
+  // "-live" models only work over the Live (audio/streaming) API, not for
+  // plain text/JSON generation, so map them to the normal text model.
+  if (/-live$/i.test(name)) {
+    const fixed = name.replace(/-live$/i, '-flash');
+    console.warn(
+      `GEMINI_MODEL "${name}" is a Live model. Using "${fixed}" instead. Set GEMINI_MODEL to a normal text model to remove this warning.`
     );
+    name = fixed;
+  }
+
+  return name;
+}
+
+function getGeminiClient() {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error('Gemini API key is missing. Add GEMINI_API_KEY to your environment variables.');
   }
 
   if (!geminiClient) {
-    geminiClient = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY
-    });
+    geminiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   }
 
-  // Adapter preserves the existing game functions.
-  return {
-    generateContent: async (prompt) => {
-      const modelName =
-        process.env.GEMINI_MODEL || 'gemini-3.8-live';
-
-      return generateLiveText(geminiClient, modelName, prompt);
-    }
-  };
+  return geminiClient;
 }
 
-async function generateLiveText(client, modelName, prompt) {
-  return new Promise(async (resolve, reject) => {
-    let session = null;
-    let output = '';
-    let settled = false;
+async function callGemini(prompt) {
+  const client = getGeminiClient();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000);
 
-    const timeout = setTimeout(() => {
-      finish(
-        reject,
-        new Error('Gemini Live response timed out after 150 seconds.')
-      );
-    }, 150000);
-
-    function finish(callback, value) {
-      if (settled) return;
-
-      settled = true;
-      clearTimeout(timeout);
-
-      if (session) {
-        try {
-          session.close();
-        } catch (error) {
-          console.warn('Gemini session cleanup:', error.message);
-        }
+  try {
+    const response = await client.models.generateContent({
+      model: resolveModelName(),
+      contents: prompt,
+      config: {
+        temperature: 0.3,
+        maxOutputTokens: 32768,
+        responseMimeType: 'application/json',
+        abortSignal: controller.signal
       }
+    });
 
-      callback(value);
+    const text = response?.text;
+
+    if (!text || !String(text).trim()) {
+      throw new Error('Gemini returned an empty response.');
     }
 
-    try {
-      session = await client.live.connect({
-        model: modelName,
-
-        config: {
-          responseModalities: ['TEXT'],
-          temperature: 0.3,
-          maxOutputTokens: 32768
-        },
-
-        callbacks: {
-          onmessage: (message) => {
-            if (settled) return;
-
-            const serverContent = message?.serverContent;
-
-            // Collect every text part returned by Gemini.
-            const parts = serverContent?.modelTurn?.parts || [];
-
-            for (const part of parts) {
-              if (typeof part.text === 'string') {
-                output += part.text;
-              }
-            }
-
-            // Also support text transcription if supplied.
-            if (
-              !output &&
-              typeof serverContent?.outputTranscription?.text === 'string'
-            ) {
-              output += serverContent.outputTranscription.text;
-            }
-
-            // Resolve only when Gemini completes its response.
-            if (serverContent?.turnComplete === true) {
-              if (!output.trim()) {
-                finish(
-                  reject,
-                  new Error('Gemini Live returned an empty response.')
-                );
-                return;
-              }
-
-              // Preserve the response format used by the old code.
-              finish(resolve, {
-                response: {
-                  text: () => output.trim()
-                }
-              });
-            }
-          },
-
-          onerror: (error) => {
-            finish(
-              reject,
-              new Error(
-                error?.message ||
-                error?.error?.message ||
-                'Gemini Live WebSocket error.'
-              )
-            );
-          },
-
-          onclose: () => {
-            if (!settled) {
-              finish(
-                reject,
-                new Error(
-                  'Gemini Live connection closed before completing its response.'
-                )
-              );
-            }
-          }
-        }
-      });
-
-      // Send the prompt as text, not audio.
-      session.sendClientContent({
-        turns: [
-          {
-            role: 'user',
-            parts: [{ text: prompt }]
-          }
-        ],
-        turnComplete: true
-      });
-
-    } catch (error) {
-      finish(reject, error);
-    }
-  });
+    return String(text);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
-// --------------------------------------------------
-// GEMINI RETRY HANDLING
-// --------------------------------------------------
+function isQuotaError(error) {
+  const message = String(error?.message || '').toLowerCase();
 
-async function generateWithRetry(model, prompt, label = 'Gemini') {
+  return (
+    error?.status === 429 ||
+    message.includes('quota') ||
+    message.includes('resource_exhausted') ||
+    message.includes('billing') ||
+    message.includes('limit: 0') ||
+    message.includes('429')
+  );
+}
+
+// Calls Gemini, parses JSON, validates it, and retries on any failure
+// (network error, bad JSON, or failed validation).
+async function generateJSON(prompt, label, validate = value => value) {
   let lastError;
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      return await model.generateContent(prompt);
-
+      const text = await callGemini(prompt);
+      return validate(extractJSON(text));
     } catch (error) {
       lastError = error;
 
-      const message = String(error.message || '').toLowerCase();
-
-      const quotaExhausted =
-        message.includes('quota') ||
-        message.includes('resource_exhausted') ||
-        message.includes('billing') ||
-        message.includes('limit: 0') ||
-        message.includes('429');
-
-      if (quotaExhausted) {
-        throw new Error(
+      if (isQuotaError(error)) {
+        throw new GeminiQuotaError(
           `${label}: Gemini quota or rate limit reached. Check Google AI Studio usage and project limits.`
         );
       }
 
       if (attempt < 3) {
         const delay = attempt * 2500;
-
-        console.warn(
-          `${label} attempt ${attempt} failed. Retrying in ${delay}ms.`,
-          error.message
-        );
-
+        console.warn(`${label} attempt ${attempt} failed. Retrying in ${delay}ms.`, error.message);
         await sleep(delay);
       }
     }
@@ -306,7 +248,6 @@ async function generateWithRetry(model, prompt, label = 'Gemini') {
 
   throw lastError || new Error(`${label} failed.`);
 }
-
 
 // --------------------------------------------------
 // PERMANENT MARVEL AND DC DATABASES
@@ -340,7 +281,7 @@ const MARVEL_DATA = [
   ['Doctor Strange',97,['Mystic arts','Portals','Spell casting'],['Versatility','Knowledge','Magic'],['Concentration'],'Stephen Strange is a master of the mystic arts.','Mystical and versatile'],
   ['Scarlet Witch',99,['Chaos magic','Energy manipulation'],['Reality manipulation','Power'],['Control varies by version'],'Wanda Maximoff is a powerful magic user.','Reality-altering magic'],
   ['Vision',94,['Density control','Flight','Energy beam'],['Durability','Intelligence','Versatility'],['Specialized vulnerabilities'],'Vision is an android with advanced abilities.','Versatile energy combat'],
-  ['Black Panther',89,['Enhanced physiology','Vibranium suit'],['Strategy','Agility','Technology'],['Equipment dependence'],'T Challa is the technologically advanced king of Wakanda.','Agile and tactical'],
+  ['Black Panther',89,['Enhanced physiology','Vibranium suit'],['Strategy','Agility','Technology'],['Equipment dependence'],'T\'Challa is the technologically advanced king of Wakanda.','Agile and tactical'],
   ['Captain Marvel',96,['Energy absorption','Flight','Super strength'],['Power','Speed','Durability'],['Power varies by version'],'Carol Danvers is a powerful cosmic hero.','Cosmic energy combat'],
   ['Ant-Man',85,['Size manipulation','Technology'],['Infiltration','Adaptability'],['Suit dependence'],'Scott Lang uses technology to change size.','Size-based tactics'],
   ['Wasp',85,['Size manipulation','Flight','Energy blasts'],['Agility','Precision'],['Suit dependence'],'Janet van Dyne is a founding Avenger.','Agile aerial combat'],
@@ -400,7 +341,7 @@ const DC_DATA = [
   ['Batgirl',85,['Martial arts','Technology','Detective skills'],['Intelligence','Agility'],['Human physiology'],'Barbara Gordon is a skilled hero and detective.','Technical'],
   ['Robin',82,['Martial arts','Acrobatics'],['Agility','Training'],['Human physiology'],'Robin is a trained young hero.','Agile'],
   ['Raven',95,['Magic','Empathy','Energy manipulation'],['Magic','Versatility'],['Emotional control'],'Raven is a powerful empath and magic user.','Mystical'],
-  ['Starfire',93,['Energy projection','Flight','Strength'],['Power','Mobility'],['Power varies by version'],'Koriand r is a powerful alien hero.','Energy combat'],
+  ['Starfire',93,['Energy projection','Flight','Strength'],['Power','Mobility'],['Power varies by version'],'Koriand\'r is a powerful alien hero.','Energy combat'],
   ['Beast Boy',87,['Animal transformation'],['Adaptability','Versatility'],['Form-dependent limits'],'Garfield Logan can transform into animals.','Adaptive'],
   ['Blue Beetle',90,['Alien scarab armour','Energy weapons'],['Technology','Adaptability'],['Scarab control'],'Jaime Reyes uses an advanced alien scarab.','Armoured technology'],
   ['Booster Gold',85,['Future technology','Force field'],['Technology','Mobility'],['Equipment dependence'],'Booster Gold uses technology from the future.','Technology'],
@@ -433,7 +374,7 @@ const DC_DATA = [
   ['Big Barda',94,['New God physiology','Mega-Rod'],['Strength','Combat experience'],['Equipment dependence'],'Big Barda is a powerful New God warrior.','Powerful close combat'],
   ['Orion',96,['New God physiology','Astro-Harness'],['Strength','Durability'],['Temperamental nature'],'Orion is a powerful New God warrior.','Cosmic strength'],
   ['Etrigan',94,['Demonic abilities','Magic'],['Strength','Magic'],['Supernatural rules'],'Etrigan is a powerful supernatural being.','Supernatural'],
-  ['Ras al Ghul',87,['Martial arts','Strategy','Lazarus Pit'],['Planning','Experience'],['Human limitations'],'Ra al Ghul is an experienced strategist and fighter.','Strategic']
+  ['Ra\'s al Ghul',87,['Martial arts','Strategy','Lazarus Pit'],['Planning','Experience'],['Human limitations'],'Ra\'s al Ghul is an experienced strategist and fighter.','Strategic']
 ];
 
 function makePermanentPool(genre, data) {
@@ -568,7 +509,6 @@ async function generateGenreCharacters(genre) {
 
   const generated = [];
   const seen = new Set();
-  const model = getGeminiModel();
 
   for (let batch = 0; batch < 5 && generated.length < 100; batch++) {
     const count = Math.min(20, 100 - generated.length);
@@ -592,9 +532,25 @@ Return JSON only:
  ]
 }`;
 
-    const result = await generateWithRetry(model, prompt, `${genre} batch ${batch + 1}`);
-    const parsed = extractJSON(result.response.text());
-    const entries = Array.isArray(parsed.characters) ? parsed.characters : [];
+    let entries;
+
+    try {
+      const parsed = await generateJSON(prompt, `${genre} batch ${batch + 1}`, value => {
+        if (!value || !Array.isArray(value.characters)) {
+          throw new Error('Gemini did not return a characters array.');
+        }
+        return value;
+      });
+      entries = parsed.characters;
+    } catch (error) {
+      if (error instanceof GeminiQuotaError) throw error;
+      // Keep what we already have if a later batch fails.
+      if (generated.length >= 20) {
+        console.warn(`${genre}: stopping early with ${generated.length} characters.`, error.message);
+        break;
+      }
+      throw error;
+    }
 
     for (const raw of entries) {
       const character = normalizeCharacter(raw, genre);
@@ -617,28 +573,26 @@ Return JSON only:
   return generated.slice(0, 100);
 }
 
-async function getGenreCharacters(genre) {
-  if (!GENRES.includes(genre)) throw new Error(`Unsupported genre: ${genre}`);
+// The promise is cached immediately so simultaneous requests for the same
+// genre share one generation instead of each calling Gemini.
+function getGenreCharacters(genre) {
+  if (!GENRES.includes(genre)) {
+    return Promise.reject(new Error(`Unsupported genre: ${genre}`));
+  }
 
   if (genreCache.has(genre)) return genreCache.get(genre);
 
-  const promise = generateGenreCharacters(genre);
-
-  try {
-    const characters = await promise;
-    genreCache.set(genre, Promise.resolve(characters));
-    return characters;
-  } catch (error) {
+  const promise = generateGenreCharacters(genre).catch(error => {
     genreCache.delete(genre);
     throw error;
-  }
+  });
+
+  genreCache.set(genre, promise);
+  return promise;
 }
 
 // --------------------------------------------------
-// CHARACTER IMAGE LOOKUP
-
-// --------------------------------------------------
-// CHARACTER IMAGE LOOKUP - IMPROVED
+// CHARACTER IMAGE LOOKUP (WIKIPEDIA)
 // --------------------------------------------------
 
 function normalizeImageText(value) {
@@ -651,8 +605,7 @@ function normalizeImageText(value) {
 }
 
 async function getWikipediaImage(character) {
-  const cacheKey =
-    `${character.universe}:${character.name}`.toLowerCase();
+  const cacheKey = `${character.universe}:${character.name}`.toLowerCase();
 
   if (imageCache.has(cacheKey)) {
     return imageCache.get(cacheKey);
@@ -664,10 +617,7 @@ async function getWikipediaImage(character) {
 
       searchUrl.searchParams.set('action', 'query');
       searchUrl.searchParams.set('list', 'search');
-      searchUrl.searchParams.set(
-        'srsearch',
-        `"${character.name}" ${character.universe}`
-      );
+      searchUrl.searchParams.set('srsearch', `"${character.name}" ${character.universe}`);
       searchUrl.searchParams.set('srnamespace', '0');
       searchUrl.searchParams.set('srlimit', '10');
       searchUrl.searchParams.set('format', 'json');
@@ -675,9 +625,7 @@ async function getWikipediaImage(character) {
 
       const searchResponse = await fetch(searchUrl, {
         signal: AbortSignal.timeout(8000),
-        headers: {
-          'User-Agent': 'BattleAuctionGame/1.0 (character image lookup)'
-        }
+        headers: { 'User-Agent': 'BattleAuctionGame/1.0 (character image lookup)' }
       });
 
       if (!searchResponse.ok) return null;
@@ -690,10 +638,13 @@ async function getWikipediaImage(character) {
       const characterName = normalizeImageText(character.name);
       const genreName = normalizeImageText(character.universe);
 
-      // Only accept results whose titles actually match the character.
+      // Whole-word matching, so "Rama" does not match "Ramayana".
+      const paddedName = ` ${characterName} `;
+
       const rankedResults = results
         .map(page => {
           const title = normalizeImageText(page.title);
+          const paddedTitle = ` ${title} `;
 
           let score = 0;
 
@@ -701,11 +652,11 @@ async function getWikipediaImage(character) {
             score = 100;
           } else if (title.startsWith(characterName + ' ')) {
             score = 90;
-          } else if (title.includes(characterName)) {
+          } else if (paddedTitle.includes(paddedName)) {
             score = 75;
           }
 
-          if (genreName && title.includes(genreName)) {
+          if (score && genreName && title.includes(genreName)) {
             score += 10;
           }
 
@@ -716,7 +667,6 @@ async function getWikipediaImage(character) {
 
       if (!rankedResults.length) return null;
 
-      // Check the best matching pages for an actual thumbnail.
       const pageIds = rankedResults
         .slice(0, 5)
         .map(item => item.page.pageid)
@@ -734,9 +684,7 @@ async function getWikipediaImage(character) {
 
       const imageResponse = await fetch(imageUrl, {
         signal: AbortSignal.timeout(8000),
-        headers: {
-          'User-Agent': 'BattleAuctionGame/1.0 (character image lookup)'
-        }
+        headers: { 'User-Agent': 'BattleAuctionGame/1.0 (character image lookup)' }
       });
 
       if (!imageResponse.ok) return null;
@@ -754,11 +702,7 @@ async function getWikipediaImage(character) {
 
       return null;
     } catch (error) {
-      console.warn(
-        `Image lookup failed for ${character.name}:`,
-        error.message
-      );
-
+      console.warn(`Image lookup failed for ${character.name}:`, error.message);
       return null;
     }
   })();
@@ -775,54 +719,52 @@ async function attachCharacterImages(room) {
 
   async function worker() {
     while (nextIndex < room.characters.length) {
+      if (!rooms.has(room.code)) return;
+
       const index = nextIndex++;
       const character = room.characters[index];
 
       try {
         character.imageUrl = await getWikipediaImage(character);
-      } catch (error) {
+      } catch {
         character.imageUrl = null;
       }
 
-      // Send updates as images become available.
-      // This avoids waiting for the entire character pool.
-      if (rooms.has(room.code)) {
-        emitRoom(room);
-      }
+      // Batched: at most one broadcast per second instead of one per image.
+      scheduleEmit(room);
     }
   }
 
-  await Promise.all(
-    Array.from({ length: workerCount }, () => worker())
-  );
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 }
 
 // --------------------------------------------------
 // ROOM STATE
 // --------------------------------------------------
 
+const REVEAL_ALL_STATUSES = [
+  'team_reveal',
+  'ready_for_fight',
+  'championship',
+  'incomplete'
+];
+
 function publicRoom(room, viewerId) {
-  const showAllTeams = [
-    'team_reveal',
-    'ready_for_fight',
-    'championship'
-  ].includes(room.status);
+  const showAllTeams = REVEAL_ALL_STATUSES.includes(room.status);
 
-  const showImages = [
-    'auction_ready',
-    'auction'
-  ].includes(room.status);
+  // Image URLs are always looked up from the room's master character list,
+  // so teams and the current character stay up to date as images load.
+  const imageById = new Map(
+    room.characters.map(character => [character.id, character.imageUrl || null])
+  );
 
-  const publicCharacter = character => {
+  const withImage = character => {
     if (!character) return null;
 
-    const copy = { ...character };
-
-    if (!showImages) {
-      delete copy.imageUrl;
-    }
-
-    return copy;
+    return {
+      ...character,
+      imageUrl: imageById.get(character.id) ?? character.imageUrl ?? null
+    };
   };
 
   const connectedPlayers = room.players.filter(p => p.connected);
@@ -831,12 +773,11 @@ function publicRoom(room, viewerId) {
     p => p.id === room.currentTurnPlayerId
   );
 
-  const currentCharacter = room.currentCharacter
-    ? (
-        room.characters.find(c => c.id === room.currentCharacter.id) ||
-        room.currentCharacter
-      )
-    : null;
+  // Only characters that have already been deployed are sent during the
+  // auction, so clients cannot see the upcoming order.
+  const visibleCharacters = showAllTeams
+    ? room.characters
+    : room.characters.slice(0, Math.max(0, room.characterIndex + 1));
 
   return {
     code: room.code,
@@ -849,14 +790,15 @@ function publicRoom(room, viewerId) {
       name: player.name,
       budget: player.budget,
       team: showAllTeams || player.id === viewerId
-        ? player.team.map(publicCharacter)
+        ? player.team.map(withImage)
         : [],
       connected: player.connected
     })),
 
-    characters: room.characters.map(publicCharacter),
+    characters: visibleCharacters.map(withImage),
+    totalCharacters: room.characters.length,
     characterIndex: room.characterIndex,
-    currentCharacter: publicCharacter(currentCharacter),
+    currentCharacter: withImage(room.currentCharacter),
     currentBid: room.currentBid,
     highestBidderId: room.highestBidderId,
     lastBidderId: room.lastBidderId,
@@ -878,15 +820,42 @@ function publicRoom(room, viewerId) {
 
 function emitRoom(room) {
   room.stateVersion = (room.stateVersion || 0) + 1;
+
   for (const player of room.players) {
+    if (!player.connected) continue;
     io.to(player.id).emit('room:update', publicRoom(room, player.id));
   }
+}
+
+function scheduleEmit(room, delay = 1000) {
+  if (emitTimers.has(room.code)) return;
+
+  const timer = setTimeout(() => {
+    emitTimers.delete(room.code);
+    if (rooms.has(room.code)) emitRoom(room);
+  }, delay);
+
+  emitTimers.set(room.code, timer);
 }
 
 function stopTimer(code) {
   const timer = turnTimers.get(code);
   if (timer) clearTimeout(timer);
   turnTimers.delete(code);
+}
+
+function destroyRoom(code) {
+  stopTimer(code);
+
+  const reveal = revealTimers.get(code);
+  if (reveal) clearTimeout(reveal);
+  revealTimers.delete(code);
+
+  const pending = emitTimers.get(code);
+  if (pending) clearTimeout(pending);
+  emitTimers.delete(code);
+
+  rooms.delete(code);
 }
 
 function activePlayers(room) {
@@ -897,6 +866,10 @@ function findRoomForSocket(socketId) {
   return [...rooms.values()].find(room =>
     room.players.some(player => player.id === socketId)
   );
+}
+
+function getHostRoom(socket) {
+  return [...rooms.values()].find(room => room.hostId === socket.id);
 }
 
 function findPlayer(room, playerId) {
@@ -910,6 +883,58 @@ function canBid(player, room) {
     player.team.length < room.settings.teamSize &&
     player.budget >= room.currentBid + 1
   );
+}
+
+function transferHostIfNeeded(room) {
+  const host = findPlayer(room, room.hostId);
+  if (host && host.connected) return;
+
+  const next = room.players.find(player => player.connected);
+  if (next) room.hostId = next.id;
+}
+
+// When a player reconnects they get a new socket id. This swaps the old id
+// for the new one everywhere in the room so their seat, team and bids carry on.
+function remapPlayerId(room, oldId, newId) {
+  if (oldId === newId) return;
+
+  const swap = value => (value === oldId ? newId : value);
+
+  const player = findPlayer(room, oldId);
+  if (player) player.id = newId;
+
+  room.hostId = swap(room.hostId);
+  room.openingPlayerId = swap(room.openingPlayerId);
+  room.nextOpeningPlayerId = swap(room.nextOpeningPlayerId);
+  room.currentTurnPlayerId = swap(room.currentTurnPlayerId);
+  room.highestBidderId = swap(room.highestBidderId);
+  room.lastBidderId = swap(room.lastBidderId);
+
+  if (room.passedPlayerIds.has(oldId)) {
+    room.passedPlayerIds.delete(oldId);
+    room.passedPlayerIds.add(newId);
+  }
+
+  for (const result of room.results) {
+    result.winnerId = swap(result.winnerId);
+  }
+
+  for (const entry of room.auctionLog) {
+    if ('playerId' in entry) entry.playerId = swap(entry.playerId);
+    if ('winnerId' in entry) entry.winnerId = swap(entry.winnerId);
+  }
+
+  if (room.championship) {
+    for (const match of room.championship.matches || []) {
+      match.teamAId = swap(match.teamAId);
+      match.teamBId = swap(match.teamBId);
+      match.winnerId = swap(match.winnerId);
+    }
+
+    for (const standing of room.championship.standings || []) {
+      standing.playerId = swap(standing.playerId);
+    }
+  }
 }
 
 // --------------------------------------------------
@@ -951,15 +976,19 @@ function finishTurnCycle(room) {
   beginTurn(room);
 }
 
+function pauseAuction(room) {
+  stopTimer(room.code);
+  room.turnDeadline = null;
+  room.status = 'auction_paused';
+  emitRoom(room);
+}
+
 function beginTurn(room) {
   stopTimer(room.code);
   if (room.status !== 'auction') return;
 
   if (!activePlayers(room).length) {
-    room.turnDeadline = null;
-    room.currentTurnPlayerId = null;
-    room.status = 'auction_paused';
-    emitRoom(room);
+    pauseAuction(room);
     return;
   }
 
@@ -1032,9 +1061,9 @@ function resolveAuction(room) {
 
   let awarded = false;
 
+  // A winner who is briefly disconnected still keeps their winning bid.
   if (
     winner &&
-    winner.connected &&
     winner.budget >= room.currentBid &&
     winner.team.length < room.settings.teamSize
   ) {
@@ -1085,7 +1114,11 @@ function resolveAuction(room) {
   room.currentTurnIndex = 0;
   room.status = 'auction_ready';
 
-  if (room.characterIndex >= room.characters.length - 1) {
+  const allTeamsFull = room.players.every(
+    player => player.team.length >= room.settings.teamSize
+  );
+
+  if (room.characterIndex >= room.characters.length - 1 || allTeamsFull) {
     completeAuction(room);
     return;
   }
@@ -1102,37 +1135,34 @@ function completeAuction(room) {
 
   stopTimer(room.code);
 
+  // One entry per empty slot. (The old version looped forever here.)
   const emptySlots = [];
 
   for (const player of room.players) {
-    while (player.team.length < room.settings.teamSize) {
+    for (let i = player.team.length; i < room.settings.teamSize; i++) {
       emptySlots.push(player);
     }
   }
 
   const assignedIds = new Set(
-    room.players.flatMap(player =>
-      player.team.map(character => character.id)
-    )
+    room.players.flatMap(player => player.team.map(character => character.id))
   );
 
-  // First priority: characters held because nobody bought them.
+  // First priority: characters nobody bought. Second: any other unused ones.
   const heldCharacters = room.reserveCharacters.filter(
     character => !assignedIds.has(character.id)
   );
 
   const heldIds = new Set(heldCharacters.map(c => c.id));
 
-  // Second priority: any other unused characters.
   const remainingCharacters = room.characters.filter(
-    character =>
-      !assignedIds.has(character.id) &&
-      !heldIds.has(character.id)
+    character => !assignedIds.has(character.id) && !heldIds.has(character.id)
   );
 
+  // Shuffled so the host and early joiners get no advantage.
   const freePool = [
-    ...heldCharacters,
-    ...remainingCharacters
+    ...shuffle(heldCharacters),
+    ...shuffle(remainingCharacters)
   ];
 
   if (freePool.length < emptySlots.length) {
@@ -1147,7 +1177,7 @@ function completeAuction(room) {
     return;
   }
 
-  emptySlots.forEach((player, index) => {
+  shuffle(emptySlots).forEach((player, index) => {
     player.team.push({
       ...clone(freePool[index]),
       paid: 0,
@@ -1204,9 +1234,9 @@ function calculateTeamStrength(team) {
 
   return Math.max(0, Math.min(100, Math.round(ratings / team.length + synergy)));
 }
+
 function isSpecialMatch(playerA, playerB, scoreA, scoreB) {
   if (scoreA === scoreB) return true;
-
   if (Math.abs(scoreA - scoreB) <= 3) return true;
 
   const averageRating = team => {
@@ -1222,7 +1252,6 @@ function isSpecialMatch(playerA, playerB, scoreA, scoreB) {
   const ratingB = averageRating(playerB.team);
 
   if (scoreA > scoreB && ratingB - ratingA >= 8) return true;
-
   if (scoreB > scoreA && ratingA - ratingB >= 8) return true;
 
   return false;
@@ -1315,7 +1344,7 @@ function calculateStandings(room, matches, evaluations = []) {
 }
 
 // --------------------------------------------------
-// LOCAL FALLBACK CHARACTER ANALYSIS
+// LOCAL FALLBACK ANALYSIS
 // --------------------------------------------------
 
 function buildCharacterAnalysis(team, opponentTeam) {
@@ -1347,55 +1376,47 @@ function buildCharacterAnalysis(team, opponentTeam) {
   });
 }
 
-// --------------------------------------------------
-// FALLBACK CHAMPIONSHIP
-// --------------------------------------------------
+function sanitizeCharacterAnalysis(entries, team, opponentTeam) {
+  const teamNames = new Set(team.map(character => character.name));
+  const opponentNames = new Set(opponentTeam.map(character => character.name));
 
-function createFallbackChampionship(room, errorMessage) {
-  const matches = [];
-
-  for (let i = 0; i < room.players.length; i++) {
-    for (let j = i + 1; j < room.players.length; j++) {
-      const a = room.players[i];
-      const b = room.players[j];
-
-      const scoreA = calculateTeamStrength(a.team);
-      const scoreB = calculateTeamStrength(b.team);
-
-      let winnerId = null;
-      let result = 'DRAW';
-
-      if (scoreA > scoreB) {
-        winnerId = a.id;
-        result = 'TEAM_A_WINS';
-      } else if (scoreB > scoreA) {
-        winnerId = b.id;
-        result = 'TEAM_B_WINS';
-      }
-
-           matches.push({
-        teamAId: a.id,
-        teamAName: a.name,
-        teamBId: b.id,
-        teamBName: b.name,
-        scoreA,
-        scoreB,
-        winnerId,
-        result,
-        explanation: isSpecialMatch(a, b, scoreA, scoreB)
-          ? `${a.name} scored ${scoreA}/100 and ${b.name} scored ${scoreB}/100. This is a special match because ${
-              scoreA === scoreB
-                ? 'the result is a draw.'
-                : Math.abs(scoreA - scoreB) <= 3
-                  ? 'the result was exceptionally close.'
-                  : 'the winning team had a lower average character rating.'
-            }`
-          : ''
-      });
-    }
+  if (!Array.isArray(entries)) {
+    return buildCharacterAnalysis(team, opponentTeam);
   }
 
-  const evaluations = room.players.map(player => ({
+  const byName = new Map();
+
+  for (const entry of entries) {
+    if (!entry || !teamNames.has(entry.characterName)) continue;
+
+    const opponentMatchups = Array.isArray(entry.opponentMatchups)
+      ? entry.opponentMatchups
+          .filter(item => item && opponentNames.has(item.opponentName))
+          .map(item => ({
+            opponentName: safeText(item.opponentName),
+            advantage: safeText(item.advantage),
+            disadvantage: safeText(item.disadvantage),
+            impact: safeText(item.impact)
+          }))
+      : [];
+
+    byName.set(entry.characterName, {
+      characterName: entry.characterName,
+      opponentMatchups,
+      advantages: cleanList(entry.advantages),
+      disadvantages: cleanList(entry.disadvantages),
+      impact: safeText(entry.impact),
+      tacticalRole: safeText(entry.tacticalRole)
+    });
+  }
+
+  return team.map(character =>
+    byName.get(character.name) || buildCharacterAnalysis([character], opponentTeam)[0]
+  );
+}
+
+function fallbackEvaluation(player) {
+  return {
     playerId: player.id,
     score: calculateTeamStrength(player.team),
     summary: 'Provisional evaluation based on character ratings and team attributes.',
@@ -1406,7 +1427,61 @@ function createFallbackChampionship(room, errorMessage) {
     vulnerabilities: [],
     keyContributions: [],
     rankingRationale: 'Provisional ranking using the combined scoring formula.'
-  }));
+  };
+}
+
+function buildMatchResult(room, playerA, playerB, scoreA, scoreB) {
+  let winnerId = null;
+  let result = 'DRAW';
+
+  if (scoreA > scoreB) {
+    winnerId = playerA.id;
+    result = 'TEAM_A_WINS';
+  } else if (scoreB > scoreA) {
+    winnerId = playerB.id;
+    result = 'TEAM_B_WINS';
+  }
+
+  return { winnerId, result };
+}
+
+function buildFallbackMatch(room, playerA, playerB) {
+  const scoreA = calculateTeamStrength(playerA.team);
+  const scoreB = calculateTeamStrength(playerB.team);
+  const { winnerId, result } = buildMatchResult(room, playerA, playerB, scoreA, scoreB);
+
+  return {
+    teamAId: playerA.id,
+    teamAName: playerA.name,
+    teamBId: playerB.id,
+    teamBName: playerB.name,
+    scoreA,
+    scoreB,
+    winnerId,
+    result,
+    explanation: isSpecialMatch(playerA, playerB, scoreA, scoreB)
+      ? `${playerA.name} scored ${scoreA}/100 and ${playerB.name} scored ${scoreB}/100. This is a special match because ${
+          scoreA === scoreB
+            ? 'the result is a draw.'
+            : Math.abs(scoreA - scoreB) <= 3
+              ? 'the result was exceptionally close.'
+              : 'the winning team had a lower average character rating.'
+        }`
+      : '',
+    analysisStatus: 'fallback'
+  };
+}
+
+function createFallbackChampionship(room, errorMessage) {
+  const matches = [];
+
+  for (let i = 0; i < room.players.length; i++) {
+    for (let j = i + 1; j < room.players.length; j++) {
+      matches.push(buildFallbackMatch(room, room.players[i], room.players[j]));
+    }
+  }
+
+  const evaluations = room.players.map(fallbackEvaluation);
 
   return {
     matches,
@@ -1437,7 +1512,7 @@ function createFallbackChampionship(room, errorMessage) {
 // AI TEAM EVALUATION
 // --------------------------------------------------
 
-async function evaluateTeamsWithGemini(model, teams) {
+async function evaluateTeamsWithGemini(teams) {
   const prompt = `
 You are a neutral judge for a fictional and sporting team-building championship.
 
@@ -1473,27 +1548,26 @@ TEAMS:
 ${JSON.stringify(teams)}
 `;
 
-  const result = await generateWithRetry(model, prompt, 'Team evaluation');
-  const parsed = extractJSON(result.response.text());
-
-  if (!Array.isArray(parsed.teams) || parsed.teams.length !== teams.length) {
-    throw new Error('Gemini did not evaluate every team.');
-  }
+  const parsed = await generateJSON(prompt, 'Team evaluation', value => {
+    if (!value || !Array.isArray(value.teams)) {
+      throw new Error('Gemini did not return a teams array.');
+    }
+    return value;
+  });
 
   const validIds = new Set(teams.map(team => team.playerId));
   const seen = new Set();
+  const evaluations = [];
 
-  return parsed.teams.map(entry => {
-    if (!validIds.has(entry.playerId) || seen.has(entry.playerId)) {
-      throw new Error('Gemini returned an invalid or duplicate team evaluation.');
-    }
+  for (const entry of parsed.teams) {
+    if (!entry || !validIds.has(entry.playerId) || seen.has(entry.playerId)) continue;
+
+    const score = Number(entry.score);
+    if (!Number.isFinite(score)) continue;
 
     seen.add(entry.playerId);
 
-    const score = Number(entry.score);
-    if (!Number.isFinite(score)) throw new Error('Invalid team evaluation score.');
-
-    return {
+    evaluations.push({
       playerId: entry.playerId,
       score: Math.max(1, Math.min(100, Math.round(score))),
       summary: safeText(entry.summary),
@@ -1504,20 +1578,26 @@ ${JSON.stringify(teams)}
       vulnerabilities: cleanList(entry.vulnerabilities),
       keyContributions: Array.isArray(entry.keyContributions)
         ? entry.keyContributions.slice(0, 20).map(item => ({
-            characterName: safeText(item.characterName, 'Team member'),
-            contribution: safeText(item.contribution, 'Not specified')
+            characterName: safeText(item?.characterName, 'Team member'),
+            contribution: safeText(item?.contribution, 'Not specified')
           }))
         : [],
       rankingRationale: safeText(entry.rankingRationale)
-    };
-  });
+    });
+  }
+
+  if (!evaluations.length) {
+    throw new Error('Gemini returned no usable team evaluations.');
+  }
+
+  return evaluations;
 }
 
 // --------------------------------------------------
 // AI HEAD-TO-HEAD MATCHUPS IN BATCHES
 // --------------------------------------------------
 
-async function evaluateMatchupBatch(model, batch) {
+async function evaluateMatchupBatch(batch) {
   const prompt = `
 You are a neutral judge comparing teams in a fictional and sporting team-building championship.
 
@@ -1526,10 +1606,12 @@ Use only the supplied character information.
 Do not invent powers, skills, achievements or weaknesses.
 Consider team balance, role diversity, synergy and how each character contributes against the opposing team.
 Include individual character contribution analysis for BOTH teams.
+If a team has more than 6 characters, return an empty opponentMatchups array for each character to keep the response short.
 For fictional characters, keep the analysis non-graphic and focused on abilities and strategy.
 For Football and Cricket, focus on sporting ability, roles and team balance.
 Scores must be integers from 1 to 100.
 A higher score wins. Equal scores mean a draw.
+Use the EXACT teamAId and teamBId given for each matchup, and do not swap the teams.
 Return every matchup exactly once.
 
 Return JSON only:
@@ -1583,53 +1665,14 @@ MATCHUPS:
 ${JSON.stringify(batch)}
 `;
 
-  const result = await generateWithRetry(model, prompt, 'Matchup batch');
-  const parsed = extractJSON(result.response.text());
-
-  if (!Array.isArray(parsed.matchups) || parsed.matchups.length !== batch.length) {
-    throw new Error('Gemini returned an incomplete matchup batch.');
-  }
+  const parsed = await generateJSON(prompt, 'Matchup batch', value => {
+    if (!value || !Array.isArray(value.matchups)) {
+      throw new Error('Gemini did not return a matchups array.');
+    }
+    return value;
+  });
 
   return parsed.matchups;
-}
-
-function sanitizeCharacterAnalysis(entries, team, opponentTeam) {
-  const teamNames = new Set(team.map(character => character.name));
-  const opponentNames = new Set(opponentTeam.map(character => character.name));
-
-  if (!Array.isArray(entries)) {
-    return buildCharacterAnalysis(team, opponentTeam);
-  }
-
-  const byName = new Map();
-
-  for (const entry of entries) {
-    if (!teamNames.has(entry.characterName)) continue;
-
-    const opponentMatchups = Array.isArray(entry.opponentMatchups)
-      ? entry.opponentMatchups
-          .filter(item => opponentNames.has(item.opponentName))
-          .map(item => ({
-            opponentName: safeText(item.opponentName),
-            advantage: safeText(item.advantage),
-            disadvantage: safeText(item.disadvantage),
-            impact: safeText(item.impact)
-          }))
-      : [];
-
-    byName.set(entry.characterName, {
-      characterName: entry.characterName,
-      opponentMatchups,
-      advantages: cleanList(entry.advantages),
-      disadvantages: cleanList(entry.disadvantages),
-      impact: safeText(entry.impact),
-      tacticalRole: safeText(entry.tacticalRole)
-    });
-  }
-
-  return team.map(character =>
-    byName.get(character.name) || buildCharacterAnalysis([character], opponentTeam)[0]
-  );
 }
 
 // --------------------------------------------------
@@ -1637,7 +1680,7 @@ function sanitizeCharacterAnalysis(entries, team, opponentTeam) {
 // --------------------------------------------------
 
 async function evaluateChampionshipWithGemini(room) {
-  const model = getGeminiModel();
+  getGeminiClient(); // throws early with a clear message if the key is missing
 
   const teams = room.players.map(player => ({
     playerId: player.id,
@@ -1655,13 +1698,32 @@ async function evaluateChampionshipWithGemini(room) {
     }))
   }));
 
-  // First request: one overall evaluation for each team.
-  const evaluations = await evaluateTeamsWithGemini(model, teams);
+  // 1) One overall evaluation per team. Missing teams get a local fallback.
+  let evaluations = [];
+
+  try {
+    evaluations = await evaluateTeamsWithGemini(teams);
+  } catch (error) {
+    if (error instanceof GeminiQuotaError) throw error;
+    console.warn('Team evaluation failed, using fallback:', error.message);
+  }
+
   const evaluationMap = new Map(
     evaluations.map(evaluation => [evaluation.playerId, evaluation])
   );
 
-  // Prepare every unique pair of teams.
+  let fallbackEvaluations = 0;
+
+  for (const player of room.players) {
+    if (!evaluationMap.has(player.id)) {
+      evaluationMap.set(player.id, fallbackEvaluation(player));
+      fallbackEvaluations++;
+    }
+  }
+
+  const allEvaluations = [...evaluationMap.values()];
+
+  // 2) Every unique pair of teams.
   const allPairs = [];
 
   for (let i = 0; i < teams.length; i++) {
@@ -1675,110 +1737,142 @@ async function evaluateChampionshipWithGemini(room) {
     }
   }
 
-  // Five team matchups per request keeps responses more manageable.
+  // Bigger teams make bigger responses, so use smaller batches.
+  const teamSize = room.settings.teamSize;
+  const batchSize = teamSize <= 3 ? 5 : teamSize <= 6 ? 3 : 1;
+
   const batches = [];
-  for (let i = 0; i < allPairs.length; i += 5) {
-    batches.push(allPairs.slice(i, i + 5));
+  for (let i = 0; i < allPairs.length; i += batchSize) {
+    batches.push(allPairs.slice(i, i + batchSize));
+  }
+
+  async function runBatch(batch) {
+    try {
+      const returned = await evaluateMatchupBatch(
+        batch.map(pair => ({
+          teamAId: pair.teamAId,
+          teamBId: pair.teamBId,
+          teamA: pair.teamA,
+          teamB: pair.teamB
+        }))
+      );
+
+      return { batch, returned };
+    } catch (error) {
+      if (error instanceof GeminiQuotaError) throw error;
+      console.warn('Matchup batch failed, using fallback for it:', error.message);
+      return { batch, returned: [] };
+    }
+  }
+
+  function buildAiMatch(pair, entry) {
+    const playerA = findPlayer(room, pair.teamAId);
+    const playerB = findPlayer(room, pair.teamBId);
+
+    // Accept the teams in either order and swap back if needed.
+    const swapped = entry.teamAId === pair.teamBId;
+
+    const rawScoreA = Number(swapped ? entry.scoreB : entry.scoreA);
+    const rawScoreB = Number(swapped ? entry.scoreA : entry.scoreB);
+
+    if (!Number.isFinite(rawScoreA) || !Number.isFinite(rawScoreB)) return null;
+
+    const scoreA = Math.max(1, Math.min(100, Math.round(rawScoreA)));
+    const scoreB = Math.max(1, Math.min(100, Math.round(rawScoreB)));
+
+    const { winnerId, result } = buildMatchResult(room, playerA, playerB, scoreA, scoreB);
+
+    return {
+      teamAId: pair.teamAId,
+      teamAName: playerA.name,
+      teamBId: pair.teamBId,
+      teamBName: playerB.name,
+      scoreA,
+      scoreB,
+      winnerId,
+      result,
+      explanation: isSpecialMatch(playerA, playerB, scoreA, scoreB)
+        ? safeText(
+            entry.explanation,
+            `${playerA.name}: ${scoreA}/100. ${playerB.name}: ${scoreB}/100.`
+          )
+        : '',
+      teamAAnalysis: sanitizeCharacterAnalysis(
+        swapped ? entry.teamBAnalysis : entry.teamAAnalysis,
+        playerA.team,
+        playerB.team
+      ),
+      teamBAnalysis: sanitizeCharacterAnalysis(
+        swapped ? entry.teamAAnalysis : entry.teamBAnalysis,
+        playerB.team,
+        playerA.team
+      ),
+      analysisStatus: 'complete'
+    };
   }
 
   const allMatches = [];
+  let fallbackMatches = 0;
+  const concurrency = 3;
 
-  for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-    const batch = batches[batchIndex];
+  for (let start = 0; start < batches.length; start += concurrency) {
+    const group = batches.slice(start, start + concurrency);
+    const results = await Promise.all(group.map(runBatch));
 
-    const requestData = batch.map(pair => ({
-      teamAId: pair.teamAId,
-      teamBId: pair.teamBId,
-      teamA: pair.teamA,
-      teamB: pair.teamB
-    }));
+    for (const { batch, returned } of results) {
+      for (const pair of batch) {
+        const entry = returned.find(item =>
+          item && (
+            (item.teamAId === pair.teamAId && item.teamBId === pair.teamBId) ||
+            (item.teamAId === pair.teamBId && item.teamBId === pair.teamAId)
+          )
+        );
 
-    const returned = await evaluateMatchupBatch(model, requestData);
+        const aiMatch = entry ? buildAiMatch(pair, entry) : null;
 
-    for (const entry of returned) {
-      const pair = batch.find(p =>
-        p.teamAId === entry.teamAId && p.teamBId === entry.teamBId
-      );
-
-      if (!pair) throw new Error('Gemini returned an unexpected matchup.');
-
-      const scoreA = Number(entry.scoreA);
-      const scoreB = Number(entry.scoreB);
-
-      if (!Number.isFinite(scoreA) || !Number.isFinite(scoreB)) {
-        throw new Error('Gemini returned invalid matchup scores.');
-      }
-
-      const cleanScoreA = Math.max(1, Math.min(100, Math.round(scoreA)));
-      const cleanScoreB = Math.max(1, Math.min(100, Math.round(scoreB)));
-
-      let winnerId = null;
-      let result = 'DRAW';
-
-      if (cleanScoreA > cleanScoreB) {
-        winnerId = pair.teamAId;
-        result = 'TEAM_A_WINS';
-      } else if (cleanScoreB > cleanScoreA) {
-        winnerId = pair.teamBId;
-        result = 'TEAM_B_WINS';
-      }
-
-      const playerA = findPlayer(room, pair.teamAId);
-      const playerB = findPlayer(room, pair.teamBId);
-
-      allMatches.push({
-        teamAId: pair.teamAId,
-        teamAName: playerA.name,
-        teamBId: pair.teamBId,
-        teamBName: playerB.name,
-        scoreA: cleanScoreA,
-        scoreB: cleanScoreB,
-        winnerId,
-        result,
-                explanation: isSpecialMatch(
-          playerA,
-          playerB,
-          cleanScoreA,
-          cleanScoreB
-        )
-          ? safeText(
-              entry.explanation,
-              `${playerA.name}: ${cleanScoreA}/100. ${playerB.name}: ${cleanScoreB}/100.`
+        if (aiMatch) {
+          allMatches.push(aiMatch);
+        } else {
+          allMatches.push(
+            buildFallbackMatch(
+              room,
+              findPlayer(room, pair.teamAId),
+              findPlayer(room, pair.teamBId)
             )
-          : '',
-        analysisStatus: 'complete'
-      });
+          );
+          fallbackMatches++;
+        }
+      }
     }
 
     console.log(
-      `Gemini matchup batch ${batchIndex + 1}/${batches.length} completed`
+      `Gemini matchup batches ${Math.min(start + concurrency, batches.length)}/${batches.length} completed`
     );
   }
 
-  if (allMatches.length !== allPairs.length) {
-    throw new Error('Gemini did not evaluate every head-to-head matchup.');
-  }
-
-  const standings = calculateStandings(room, allMatches, evaluations);
+  const standings = calculateStandings(room, allMatches, allEvaluations);
+  const partial = fallbackMatches > 0 || fallbackEvaluations > 0;
 
   return {
     matches: allMatches,
     standings,
     totalMatches: allMatches.length,
     completedAt: Date.now(),
-    overallSummary:
-      'Gemini evaluated every team and every head-to-head matchup, including individual character contributions.',
+    overallSummary: partial
+      ? 'Gemini evaluated most of the championship. Some parts used a rating-based fallback.'
+      : 'Gemini evaluated every team and every head-to-head matchup, including individual character contributions.',
     rankingExplanation:
-      'Final ranking combines 70% normalized head-to-head match points and 30% Gemini overall team evaluation.',
+      'Final ranking combines 70% normalized head-to-head match points and 30% overall team evaluation.',
     aiEvaluation: {
       provider: 'Gemini',
-      status: 'complete',
-      message:
-        `Gemini evaluated ${teams.length} teams and ${allMatches.length} head-to-head matchups in ${batches.length + 1} requests. Character contributions and opposing-character matchups were AI evaluated.`
+      status: partial ? 'partial' : 'complete',
+      message: partial
+        ? `Gemini evaluated ${teams.length - fallbackEvaluations} of ${teams.length} teams and ${allMatches.length - fallbackMatches} of ${allMatches.length} matchups. The rest used a rating-based fallback.`
+        : `Gemini evaluated ${teams.length} teams and ${allMatches.length} head-to-head matchups in ${batches.length + 1} requests. Character contributions and opposing-character matchups were AI evaluated.`
     },
     rankingRules: [
       '70% of the final score comes from normalized head-to-head match points.',
-      '30% of the final score comes from Gemini overall team evaluation.',
+      '30% of the final score comes from the overall team evaluation.',
       'Match win: 3 points',
       'Match draw: 1 point',
       'Match loss: 0 points',
@@ -1851,11 +1945,41 @@ function isHost(room, socket) {
 // API ROUTES
 // --------------------------------------------------
 
+// Simple per-IP rate limit for /api (60 requests per minute).
+const apiHits = new Map();
+
+app.use('/api', (req, res, next) => {
+  const now = Date.now();
+  const record = apiHits.get(req.ip) || { start: now, count: 0 };
+
+  if (now - record.start > 60000) {
+    record.start = now;
+    record.count = 0;
+  }
+
+  record.count++;
+  apiHits.set(req.ip, record);
+
+  if (record.count > 60) {
+    return res.status(429).json({ error: 'Too many requests. Please slow down.' });
+  }
+
+  next();
+});
+
+setInterval(() => {
+  const cutoff = Date.now() - 120000;
+  for (const [ip, record] of apiHits) {
+    if (record.start < cutoff) apiHits.delete(ip);
+  }
+}, 300000);
+
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
     service: 'BATTLE AUCTION',
-    geminiConfigured: Boolean(process.env.GEMINI_API_KEY)
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    geminiModel: resolveModelName()
   });
 });
 
@@ -1891,34 +2015,62 @@ app.post('/api/research', async (req, res) => {
 
 io.on('connection', socket => {
 
+  // Basic flood protection: at most 60 events per 10 seconds per socket.
+  let windowStart = Date.now();
+  let eventCount = 0;
+
+  socket.use((_packet, next) => {
+    const now = Date.now();
+
+    if (now - windowStart > 10000) {
+      windowStart = now;
+      eventCount = 0;
+    }
+
+    if (++eventCount > 60) {
+      socket.emit('error:message', 'Too many requests. Please slow down.');
+      return;
+    }
+
+    next();
+  });
+
   // CREATE ROOM
-  socket.on('room:create', ({ name, settings = {} } = {}) => {
+  socket.on('room:create', ({ name } = {}) => {
+    if (findRoomForSocket(socket.id)) {
+      return socket.emit('error:message', 'You are already in a room.');
+    }
+
+    if (rooms.size >= 500) {
+      return socket.emit('error:message', 'The server is busy. Please try again later.');
+    }
+
     let code;
     do {
       code = roomCode();
     } while (rooms.has(code));
 
-    const startingBudget = 100;
-
     const player = {
       id: socket.id,
-      name: String(name || 'Host').trim().slice(0, 24),
-      budget: startingBudget,
+      key: crypto.randomBytes(16).toString('hex'),
+      name: cleanName(name, 'Host'),
+      budget: STARTING_BUDGET,
       team: [],
       connected: true
     };
 
+    // Settings are fixed by the server. Client-supplied settings are ignored
+    // here; the host chooses team size, timer, bid and genres in room:start.
     const room = {
       code,
       hostId: socket.id,
       status: 'lobby',
       settings: {
-        startingBudget,
+        startingBudget: STARTING_BUDGET,
         teamSize: 3,
         turnSeconds: 10,
         startingBid: 1,
-        universes: ['Marvel', 'DC'],
-        ...settings
+        universes: ['Marvel', 'DC']
       },
       players: [player],
       characters: [],
@@ -1940,30 +2092,37 @@ io.on('connection', socket => {
       reserveCharacters: [],
       championship: null,
       completionError: null,
+      emptySince: null,
       stateVersion: 0
     };
 
     rooms.set(code, room);
     socket.join(code);
+    socket.emit('session', { code, key: player.key });
     socket.emit('room:created', publicRoom(room, socket.id));
     emitRoom(room);
   });
 
   // JOIN ROOM
   socket.on('room:join', ({ code, name } = {}) => {
+    if (findRoomForSocket(socket.id)) {
+      return socket.emit('error:message', 'You are already in a room.');
+    }
+
     const room = rooms.get(String(code || '').toUpperCase());
 
     if (!room || room.status !== 'lobby') {
       return socket.emit('error:message', 'Room not found or game already started.');
     }
 
-    if (room.players.length >= 10) {
+    if (room.players.length >= MAX_PLAYERS) {
       return socket.emit('error:message', 'Room is full.');
     }
 
     const player = {
       id: socket.id,
-      name: String(name || 'Player').trim().slice(0, 24),
+      key: crypto.randomBytes(16).toString('hex'),
+      name: cleanName(name, 'Player'),
       budget: room.settings.startingBudget,
       team: [],
       connected: true
@@ -1971,8 +2130,48 @@ io.on('connection', socket => {
 
     room.players.push(player);
     socket.join(room.code);
+    socket.emit('session', { code: room.code, key: player.key });
     socket.emit('room:joined', publicRoom(room, socket.id));
     emitRoom(room);
+  });
+
+  // REJOIN AFTER A DISCONNECT OR PAGE REFRESH
+  // The client should store { code, key } from the 'session' event and send
+  // it here when the socket reconnects.
+  socket.on('room:rejoin', ({ code, key } = {}) => {
+    const room = rooms.get(String(code || '').toUpperCase());
+    const player = room && key
+      ? room.players.find(p => p.key === String(key))
+      : null;
+
+    if (!room || !player) {
+      return socket.emit('room:rejoin-failed', 'Could not rejoin. The room may have expired.');
+    }
+
+    const oldId = player.id;
+
+    if (oldId !== socket.id) {
+      // Move the seat to the new socket, then drop the stale socket if any.
+      remapPlayerId(room, oldId, socket.id);
+
+      const oldSocket = io.sockets.sockets.get(oldId);
+      if (oldSocket) oldSocket.disconnect(true);
+    }
+
+    player.connected = true;
+    room.emptySince = null;
+    socket.join(room.code);
+    socket.emit('session', { code: room.code, key: player.key });
+    socket.emit('room:joined', publicRoom(room, socket.id));
+
+    transferHostIfNeeded(room);
+
+    if (room.status === 'auction_paused') {
+      room.status = 'auction';
+      beginTurn(room);
+    } else {
+      emitRoom(room);
+    }
   });
 
   // START GAME
@@ -1982,7 +2181,7 @@ io.on('connection', socket => {
     turnSeconds,
     startingBid
   } = {}) => {
-    const room = [...rooms.values()].find(r => r.hostId === socket.id);
+    const room = getHostRoom(socket);
     if (!room || room.status !== 'lobby') return;
 
     if (room.players.length < 2) {
@@ -2046,6 +2245,8 @@ io.on('connection', socket => {
         genrePools.push(...characters);
       }
 
+      if (!rooms.has(room.code)) return;
+
       const uniqueCharacters = [];
       const seenIds = new Set();
 
@@ -2065,7 +2266,10 @@ io.on('connection', socket => {
         return;
       }
 
-      room.characters = shuffle(uniqueCharacters).slice(0, requiredCharacters);
+      // Copies, so rooms never share (or modify) the cached character objects.
+      room.characters = shuffle(uniqueCharacters)
+        .slice(0, requiredCharacters)
+        .map(character => ({ ...character }));
 
       room.settings.teamSize = parsedTeamSize;
       room.settings.turnSeconds = parsedTurnSeconds;
@@ -2106,6 +2310,9 @@ io.on('connection', socket => {
 
     } catch (error) {
       console.error('Character database loading failed:', error);
+
+      if (!rooms.has(room.code)) return;
+
       room.status = 'lobby';
 
       socket.emit(
@@ -2119,7 +2326,7 @@ io.on('connection', socket => {
 
   // HOST DEPLOYS NEXT RANDOM CHARACTER
   socket.on('auction:next-character', () => {
-    const room = [...rooms.values()].find(r => r.hostId === socket.id);
+    const room = getHostRoom(socket);
     if (!isHost(room, socket)) return;
 
     if (room.status !== 'auction_ready') {
@@ -2222,7 +2429,7 @@ io.on('connection', socket => {
 
   // HOST STARTS CHAMPIONSHIP
   socket.on('championship:start', async () => {
-    const room = [...rooms.values()].find(r => r.hostId === socket.id);
+    const room = getHostRoom(socket);
     if (!isHost(room, socket)) return;
 
     if (room.status !== 'ready_for_fight') {
@@ -2245,36 +2452,72 @@ io.on('connection', socket => {
 
   // PLAYER DISCONNECT
   socket.on('disconnect', () => {
-    for (const room of rooms.values()) {
-      const player = findPlayer(room, socket.id);
-      if (!player) continue;
+    const room = findRoomForSocket(socket.id);
+    if (!room) return;
 
-      player.connected = false;
+    const player = findPlayer(room, socket.id);
+    if (!player) return;
+
+    // In the lobby a leaving player is simply removed.
+    if (room.status === 'lobby') {
+      room.players = room.players.filter(p => p.id !== socket.id);
+
+      if (!room.players.length) {
+        destroyRoom(room.code);
+        return;
+      }
+
+      if (room.hostId === socket.id) {
+        room.hostId = room.players[0].id;
+        room.openingPlayerId = room.hostId;
+        room.nextOpeningPlayerId = room.hostId;
+      }
+
+      emitRoom(room);
+      return;
+    }
+
+    // After the game starts the seat is kept so the player can rejoin.
+    player.connected = false;
+    transferHostIfNeeded(room);
+
+    if (!activePlayers(room).length) {
+      room.emptySince = Date.now();
 
       if (room.status === 'auction') {
-        if (room.currentTurnPlayerId === socket.id) {
-          stopTimer(room.code);
-          room.passedPlayerIds.add(socket.id);
-          room.noIncreaseTurns = room.passedPlayerIds.size;
-          room.currentTurnPlayerId = socket.id;
-          room.turnDeadline = null;
-          finishTurnCycle(room);
-        } else {
-          if (room.highestBidderId === socket.id) {
-            room.highestBidderId = null;
-            room.lastBidderId = null;
-            room.currentBid = room.settings.startingBid;
-            room.passedPlayerIds = new Set();
-          }
-
-          emitRoom(room);
-        }
-      } else {
-        emitRoom(room);
+        pauseAuction(room);
       }
+
+      return;
     }
+
+    if (room.status === 'auction' && room.currentTurnPlayerId === socket.id) {
+      passTurn(room, 'SKIP');
+      return;
+    }
+
+    emitRoom(room);
   });
 });
+
+// --------------------------------------------------
+// CLEAN UP ABANDONED ROOMS
+// --------------------------------------------------
+
+setInterval(() => {
+  const now = Date.now();
+
+  for (const room of [...rooms.values()]) {
+    if (
+      !activePlayers(room).length &&
+      room.emptySince &&
+      now - room.emptySince > ROOM_IDLE_MS
+    ) {
+      console.log(`Removing abandoned room ${room.code}`);
+      destroyRoom(room.code);
+    }
+  }
+}, 60000);
 
 // --------------------------------------------------
 // SERVE FRONTEND
@@ -2294,8 +2537,16 @@ app.get(/.*/, (req, res, next) => {
 });
 
 // --------------------------------------------------
-// START SERVER
+// SAFETY NETS AND START
 // --------------------------------------------------
+
+process.on('unhandledRejection', error => {
+  console.error('Unhandled promise rejection:', error);
+});
+
+process.on('uncaughtException', error => {
+  console.error('Uncaught exception:', error);
+});
 
 server.listen(PORT, () => {
   console.log(`BATTLE AUCTION server listening on ${PORT}`);
