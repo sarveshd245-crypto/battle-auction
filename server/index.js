@@ -143,7 +143,7 @@ function normalizeCharacter(raw, genre) {
 }
 
 // --------------------------------------------------
-// GEMINI (standard generateContent API)
+// GEMINI LIVE API
 // --------------------------------------------------
 
 class GeminiQuotaError extends Error {}
@@ -151,80 +151,168 @@ class GeminiQuotaError extends Error {}
 let geminiClient = null;
 
 function resolveModelName() {
+  // Set this to the exact Live API model ID shown in your AI Studio project.
   const name = (process.env.GEMINI_MODEL || '').trim();
 
   if (!name) {
     throw new Error(
-      'GEMINI_MODEL is not set. Use a supported Gemini text model such as "gemini-2.5-flash", "gemini-3.5-flash", or "gemini-4-argon".'
+      'Set GEMINI_MODEL to the exact Gemini Live API model ID enabled for your project.'
     );
-  }
-
-  // Live models are not valid for regular generateContent JSON requests.
-  if (/-live$/i.test(name)) {
-    const fixed = name.replace(/-live$/i, '-flash');
-    console.warn(
-      `GEMINI_MODEL "${name}" is a Live model. Using "${fixed}" instead. Set GEMINI_MODEL to a normal text model to remove this warning.`
-    );
-    return fixed;
   }
 
   return name;
 }
 
+function resolveThinkingLevel() {
+  const level = (process.env.GEMINI_THINKING_LEVEL || 'HIGH')
+    .trim()
+    .toUpperCase();
+
+  if (!['LOW', 'MEDIUM', 'HIGH'].includes(level)) {
+    throw new Error('GEMINI_THINKING_LEVEL must be LOW, MEDIUM, or HIGH.');
+  }
+
+  return level;
+}
+
 function getGeminiClient() {
   if (!process.env.GEMINI_API_KEY) {
-    throw new Error('Gemini API key is missing. Add GEMINI_API_KEY to your environment variables.');
+    throw new Error(
+      'Gemini API key is missing. Add GEMINI_API_KEY to your environment variables.'
+    );
   }
 
   if (!geminiClient) {
-    geminiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    geminiClient = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY
+    });
   }
 
   return geminiClient;
 }
 
-async function callGemini(prompt) {
-  const client = getGeminiClient();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120000);
-
-  try {
-    const response = await client.models.generateContent({
-      model: resolveModelName(),
-      contents: prompt,
-      config: {
-        temperature: 0.3,
-        maxOutputTokens: 32768,
-        responseMimeType: 'application/json',
-        abortSignal: controller.signal
-      }
-    });
-
-    const text = response?.text;
-
-    if (!text || !String(text).trim()) {
-      throw new Error('Gemini returned an empty response.');
-    }
-
-    return String(text);
-  } finally {
-    clearTimeout(timeout);
-  }
+function getErrorMessage(error) {
+  return String(
+    error?.message ||
+    error?.error?.message ||
+    error?.statusText ||
+    error ||
+    'Unknown Gemini Live API error.'
+  );
 }
 
 function isQuotaError(error) {
-  const message = String(error?.message || '').toLowerCase();
+  const message = getErrorMessage(error).toLowerCase();
+  const status = Number(error?.status || error?.code);
 
   return (
-    error?.status === 429 ||
+    status === 429 ||
     message.includes('quota') ||
     message.includes('resource_exhausted') ||
     message.includes('billing') ||
+    message.includes('rate limit') ||
     message.includes('limit: 0') ||
     message.includes('429')
   );
 }
 
+async function callGemini(prompt) {
+  const client = getGeminiClient();
+  const model = resolveModelName();
+  const thinkingLevel = resolveThinkingLevel();
+
+  return new Promise((resolve, reject) => {
+    let session = null;
+    let responseText = '';
+    let settled = false;
+
+    const timeout = setTimeout(() => {
+      finish(new Error('Gemini Live request timed out after 120 seconds.'));
+    }, 120000);
+
+    function finish(error) {
+      if (settled) return;
+      settled = true;
+
+      clearTimeout(timeout);
+
+      try {
+        session?.close();
+      } catch {
+        // Ignore errors closing a completed or failed Live session.
+      }
+
+      if (error) {
+        reject(error);
+      } else if (!responseText.trim()) {
+        reject(new Error('Gemini Live returned an empty response.'));
+      } else {
+        resolve(responseText);
+      }
+    }
+
+    (async () => {
+      try {
+        session = await client.live.connect({
+          model,
+          config: {
+            responseModalities: ['TEXT'],
+            thinkingConfig: {
+              thinkingLevel
+            }
+          },
+          callbacks: {
+            onmessage(message) {
+              const parts =
+                message?.serverContent?.modelTurn?.parts || [];
+
+              for (const part of parts) {
+                // Do not append internal thought parts to the user-facing result.
+                if (typeof part.text === 'string' && !part.thought) {
+                  responseText += part.text;
+                }
+              }
+
+              if (message?.serverContent?.turnComplete) {
+                finish();
+              }
+            },
+
+            onerror(error) {
+              finish(new Error(getErrorMessage(error)));
+            },
+
+            onclose(event) {
+              if (!settled) {
+                finish(
+                  new Error(
+                    event?.reason ||
+                      'Gemini Live closed before the response completed.'
+                  )
+                );
+              }
+            }
+          }
+        });
+
+        await session.sendClientContent({
+          turns: [
+            {
+              role: 'user',
+              parts: [{ text: prompt }]
+            }
+          ],
+          turnComplete: true
+        });
+      } catch (error) {
+        finish(error);
+      }
+    })();
+  });
+}
+
+// Calls Gemini Live, parses the returned JSON, validates it, and retries
+// non-quota failures up to three times.
 async function generateJSON(prompt, label, validate = value => value) {
   let lastError;
 
@@ -237,13 +325,16 @@ async function generateJSON(prompt, label, validate = value => value) {
 
       if (isQuotaError(error)) {
         throw new GeminiQuotaError(
-          `${label}: Gemini quota or rate limit reached. Check Google AI Studio usage and project limits.`
+          `${label}: Gemini quota or rate limit reached. Check the Live API quota and limits for your Google AI project.`
         );
       }
 
       if (attempt < 3) {
         const delay = attempt * 2500;
-        console.warn(`${label} attempt ${attempt} failed. Retrying in ${delay}ms.`, error.message);
+        console.warn(
+          `${label} attempt ${attempt} failed. Retrying in ${delay}ms.`,
+          getErrorMessage(error)
+        );
         await sleep(delay);
       }
     }
