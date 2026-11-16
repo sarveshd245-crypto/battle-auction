@@ -151,16 +151,21 @@ class GeminiQuotaError extends Error {}
 let geminiClient = null;
 
 function resolveModelName() {
-  let name = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
+  const name = (process.env.GEMINI_MODEL || '').trim();
 
-  // "-live" models only work over the Live (audio/streaming) API, not for
-  // plain text/JSON generation, so map them to the normal text model.
+  if (!name) {
+    throw new Error(
+      'GEMINI_MODEL is not set. Use a supported Gemini text model such as "gemini-2.5-flash", "gemini-3.5-flash", or "gemini-4-argon".'
+    );
+  }
+
+  // Live models are not valid for regular generateContent JSON requests.
   if (/-live$/i.test(name)) {
     const fixed = name.replace(/-live$/i, '-flash');
     console.warn(
       `GEMINI_MODEL "${name}" is a Live model. Using "${fixed}" instead. Set GEMINI_MODEL to a normal text model to remove this warning.`
     );
-    name = fixed;
+    return fixed;
   }
 
   return name;
@@ -220,8 +225,6 @@ function isQuotaError(error) {
   );
 }
 
-// Calls Gemini, parses JSON, validates it, and retries on any failure
-// (network error, bad JSON, or failed validation).
 async function generateJSON(prompt, label, validate = value => value) {
   let lastError;
 
@@ -248,7 +251,6 @@ async function generateJSON(prompt, label, validate = value => value) {
 
   throw lastError || new Error(`${label} failed.`);
 }
-
 // --------------------------------------------------
 // PERMANENT MARVEL AND DC DATABASES
 // --------------------------------------------------
@@ -614,7 +616,6 @@ async function getWikipediaImage(character) {
   const promise = (async () => {
     try {
       const searchUrl = new URL('https://en.wikipedia.org/w/api.php');
-
       searchUrl.searchParams.set('action', 'query');
       searchUrl.searchParams.set('list', 'search');
       searchUrl.searchParams.set('srsearch', `"${character.name}" ${character.universe}`);
@@ -637,8 +638,6 @@ async function getWikipediaImage(character) {
 
       const characterName = normalizeImageText(character.name);
       const genreName = normalizeImageText(character.universe);
-
-      // Whole-word matching, so "Rama" does not match "Ramayana".
       const paddedName = ` ${characterName} `;
 
       const rankedResults = results
@@ -648,13 +647,9 @@ async function getWikipediaImage(character) {
 
           let score = 0;
 
-          if (title === characterName) {
-            score = 100;
-          } else if (title.startsWith(characterName + ' ')) {
-            score = 90;
-          } else if (paddedTitle.includes(paddedName)) {
-            score = 75;
-          }
+          if (title === characterName) score = 100;
+          else if (title.startsWith(characterName + ' ')) score = 90;
+          else if (paddedTitle.includes(paddedName)) score = 75;
 
           if (score && genreName && title.includes(genreName)) {
             score += 10;
@@ -673,7 +668,6 @@ async function getWikipediaImage(character) {
         .join('|');
 
       const imageUrl = new URL('https://en.wikipedia.org/w/api.php');
-
       imageUrl.searchParams.set('action', 'query');
       imageUrl.searchParams.set('pageids', pageIds);
       imageUrl.searchParams.set('prop', 'pageimages');
@@ -694,7 +688,6 @@ async function getWikipediaImage(character) {
 
       for (const item of rankedResults) {
         const page = pages[item.page.pageid];
-
         if (page?.thumbnail?.source) {
           return page.thumbnail.source;
         }
@@ -709,8 +702,20 @@ async function getWikipediaImage(character) {
 
   imageCache.set(cacheKey, promise);
 
-  return promise;
+  const imageUrl = await promise;
+
+  // IMPORTANT:
+  // Do NOT cache failed lookups forever.
+  // Otherwise a temporary Wikipedia/network failure leaves characters without images forever.
+  if (!imageUrl && imageCache.get(cacheKey) === promise) {
+    imageCache.delete(cacheKey);
+  }
+
+  return imageUrl;
 }
+// --------------------------------------------------
+// IMAGE PRELOAD DURING AUCTION
+// --------------------------------------------------
 
 async function attachCharacterImages(room) {
   let nextIndex = 0;
@@ -730,14 +735,12 @@ async function attachCharacterImages(room) {
         character.imageUrl = null;
       }
 
-      // Batched: at most one broadcast per second instead of one per image.
-      scheduleEmit(room);
+      scheduleEmit(room, 0);
     }
   }
 
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
 }
-
 // --------------------------------------------------
 // ROOM STATE
 // --------------------------------------------------
@@ -1135,7 +1138,6 @@ function completeAuction(room) {
 
   stopTimer(room.code);
 
-  // One entry per empty slot. (The old version looped forever here.)
   const emptySlots = [];
 
   for (const player of room.players) {
@@ -1148,7 +1150,6 @@ function completeAuction(room) {
     room.players.flatMap(player => player.team.map(character => character.id))
   );
 
-  // First priority: characters nobody bought. Second: any other unused ones.
   const heldCharacters = room.reserveCharacters.filter(
     character => !assignedIds.has(character.id)
   );
@@ -1159,11 +1160,7 @@ function completeAuction(room) {
     character => !assignedIds.has(character.id) && !heldIds.has(character.id)
   );
 
-  // Shuffled so the host and early joiners get no advantage.
-  const freePool = [
-    ...shuffle(heldCharacters),
-    ...shuffle(remainingCharacters)
-  ];
+  const freePool = [...shuffle(heldCharacters), ...shuffle(remainingCharacters)];
 
   if (freePool.length < emptySlots.length) {
     room.status = 'incomplete';
@@ -1177,6 +1174,7 @@ function completeAuction(room) {
     return;
   }
 
+  // Assign a free character to each empty slot in random order.
   shuffle(emptySlots).forEach((player, index) => {
     player.team.push({
       ...clone(freePool[index]),
@@ -1204,14 +1202,12 @@ function completeAuction(room) {
     if (!currentRoom || currentRoom.status !== 'team_reveal') return;
 
     currentRoom.status = 'ready_for_fight';
-
     revealTimers.delete(room.code);
     emitRoom(currentRoom);
   }, 10000);
 
   revealTimers.set(room.code, timer);
 }
-
 // --------------------------------------------------
 // TEAM STRENGTH AND COMBINED STANDINGS
 // --------------------------------------------------
